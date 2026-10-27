@@ -94,7 +94,15 @@ This map links the layers of the DeployLab architecture to planned failure injec
   sudo systemctl stop mysql
   ```
 * **Observed Symptom**:
-  - **`/health` responds with HTTP 200 OK!** (Proving PHP + Laravel are healthy).
+  - **`/health` responds with HTTP 200 OK!** (Proving PHP + Laravel runtime are healthy).
+  - **Game Blade Shell (`/` or `/world`) renders with HTTP 200!** (Because the Blade shell is decoupled from database queries).
+  - **`/api/world` returns HTTP 503** with code `DATABASE_UNAVAILABLE`.
+  - **3D World Catastrophic Failover**: The Three.js scene switches from the peaceful tropical archipelago into the **Volcano Failure World** (dark red skies, smoking volcanic cone, pulsating lava, ash particles) with the diagnostic alert:
+    ```text
+    KHÔNG THỂ KẾT NỐI TỚI THIÊN ĐƯỜNG — DATA LAYER OFFLINE
+    Seminar Diagnostic Notice: MySQL / SQLite database connection unreachable.
+    [ THỬ KẾT NỐI LẠI ]
+    ```
   - **`/api/status` returns HTTP 503**:
     ```json
     {
@@ -103,9 +111,10 @@ This map links the layers of the DeployLab architecture to planned failure injec
       "cache": "ok"
     }
     ```
-  - **`POST /contact` fails**, displaying the user-friendly database connection failure banner.
-* **Diagnostic Proof**:
+* **Diagnostic & Recovery Proof**:
   - The contrast between `/health` (working) and `/api/status` (database error) instantly isolates the issue to the database layer without guessing.
+  - Restart MySQL: `sudo systemctl start mysql`.
+  - Click `[ THỬ KẾT NỐI LẠI ]` in the browser: The diagnostic probe hits `/api/health/database`, recovers, and smoothly re-initializes the peaceful Paradise archipelago!
 
 ---
 

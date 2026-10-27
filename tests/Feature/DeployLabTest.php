@@ -12,34 +12,29 @@ class DeployLabTest extends TestCase
     use RefreshDatabase;
 
     /**
-     * Test homepage loads with HTTP 200 and increments cache telemetry counter.
+     * Test homepage loads with HTTP 200 and renders game container.
      */
     public function test_homepage_returns_successful_response_and_renders(): void
     {
         $response = $this->get('/');
 
         $response->assertStatus(200);
-        $response->assertSee('DeployLab');
-        $response->assertSee('Understand');
-        $response->assertSee('every layer');
-        $response->assertSee('Request Journey');
-        $response->assertSee('Reserve Seminar Seat');
+        $response->assertSee('Thiên Đường Quần Đảo');
+        $response->assertSee('game-canvas-container');
+        $response->assertSee('god-welcome-overlay');
+        $response->assertSee('drowning-alerts-container');
     }
 
     /**
-     * Test homepage updates the cache counter correctly.
+     * Test /world alias endpoint also renders game shell.
      */
-    public function test_homepage_increments_cache_telemetry_counter(): void
+    public function test_world_alias_endpoint_renders_game_shell(): void
     {
-        Cache::flush();
+        $response = $this->get('/world');
 
-        $this->get('/');
-        $firstCount = Cache::get('landing_page_views');
-        $this->assertNotNull($firstCount);
-
-        $this->get('/');
-        $secondCount = Cache::get('landing_page_views');
-        $this->assertEquals($firstCount + 1, $secondCount);
+        $response->assertStatus(200);
+        $response->assertSee('Thiên Đường Quần Đảo');
+        $response->assertSee('game-canvas-container');
     }
 
     /**

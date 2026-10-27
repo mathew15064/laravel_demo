@@ -1,15 +1,19 @@
+import { RescueBeacon } from '../multiplayer/RescueBeacon.js';
+
 /**
- * Paradise Gods - Drowning & Rescue System
- * Tracks drowning citizens, updates 3.0s countdowns, handles rescue flights, and manages drowning death.
+ * Paradise Gods - Server Authoritative Drowning & Rescue System
+ * Computes remaining countdown from server timestamp (drowning_deadline_at).
+ * Manages 3D Emergency Rescue Beacons and cooperative rescue animations.
  */
 export class DrowningSystem {
-    constructor(apiClient, alertUi, toastUi, effectsSystem) {
+    constructor(scene, apiClient, alertUi, toastUi, effectsSystem) {
+        this.scene = scene;
         this.apiClient = apiClient;
         this.alertUi = alertUi;
         this.toastUi = toastUi;
         this.effectsSystem = effectsSystem;
 
-        this.timeoutDuration = 3000; // 3.0 seconds default
+        this.timeoutDuration = 3000;
         this.drowningCitizens = new Map(); // citizenId -> entry
     }
 
@@ -19,64 +23,126 @@ export class DrowningSystem {
         }
     }
 
-    startDrowning(citizen, onRescueCallback, onDeathCallback) {
+    startDrowning(citizen, deadlineAt = null, version = 1, onRescueCallback = null, onDeathCallback = null) {
         const id = citizen.id;
-        if (this.drowningCitizens.has(id)) return;
+
+        const effectiveDeadline = deadlineAt || (Date.now() + this.timeoutDuration);
+
+        // If already tracking this citizen, update deadline
+        if (this.drowningCitizens.has(id)) {
+            const existing = this.drowningCitizens.get(id);
+            existing.deadlineAt = effectiveDeadline;
+            return;
+        }
 
         // Visual water splash at entry
         this.effectsSystem.createWaterSplash(citizen.group.position.x, citizen.group.position.z);
 
+        // Create 3D vertical emergency rescue beacon
+        const beacon = new RescueBeacon(this.scene, {
+            x: citizen.group.position.x,
+            z: citizen.group.position.z,
+        });
+
         const entry = {
             citizen,
-            remainingTime: this.timeoutDuration,
+            deadlineAt: effectiveDeadline,
+            version,
+            beacon,
+            isFinalizing: false,
             onRescueCallback,
             onDeathCallback,
         };
 
         this.drowningCitizens.set(id, entry);
+        citizen.status = 'drowning';
+        citizen.state = 'drowning';
 
-        // Notify Laravel backend that citizen is drowning (population remains unchanged!)
-        this.apiClient.markDrowning(id);
-
-        // Show drowning alert card in UI
-        this.alertUi.addAlert(citizen, this.timeoutDuration, () => {
+        // Add to UI alert list with countdown calculated from deadline
+        this.alertUi.addAlert(citizen, entry.deadlineAt, () => {
             this.rescueCitizen(id);
         });
 
-        this.toastUi.show(`⚠ ${citizen.name} đã rơi xuống biển và đang chết đuối!`, 'warning');
+        this.toastUi.show(`🌊 ${citizen.name} rơi xuống biển và đang chết đuối! Cần cứu trợ gấp!`, 'warning');
     }
 
-    rescueCitizen(citizenId) {
+    update(delta) {
+        const now = Date.now();
+        for (const [id, entry] of this.drowningCitizens.entries()) {
+            if (entry.beacon) {
+                entry.beacon.setPosition(entry.citizen.group.position.x, entry.citizen.group.position.z);
+                entry.beacon.update(delta);
+            }
+
+            // Client-side expiration check
+            if (now >= entry.deadlineAt && !entry.isFinalizing) {
+                entry.isFinalizing = true;
+                this.apiClient.request(`/api/citizens/${id}/drown`, { method: 'POST' }).then((res) => {
+                    this.confirmDeath(id);
+                    if (res.ok && res.data?.world_population !== undefined && this.onWorldPopulationUpdated) {
+                        this.onWorldPopulationUpdated(res.data.world_population);
+                    }
+                }).catch(() => {
+                    this.confirmDeath(id);
+                });
+            }
+        }
+    }
+
+    async rescueCitizen(citizenId) {
         const entry = this.drowningCitizens.get(citizenId);
         if (!entry) return;
 
-        const citizen = entry.citizen;
-        this.drowningCitizens.delete(citizenId);
-        this.alertUi.removeAlert(citizenId);
+        // Call backend atomic rescue
+        const res = await this.apiClient.request(`/api/citizens/${citizenId}/rescue`, { method: 'POST' });
 
-        // Fly back to land animation
-        const targetIsland = citizen.currentIsland;
-        const targetX = targetIsland ? targetIsland.worldX : 0;
-        const targetZ = targetIsland ? targetIsland.worldZ : 0;
+        if (res.ok && res.data?.status === 'ok') {
+            this.handleRescueSuccess(citizenId, res.data);
+        } else if (res.data?.status === 'already_rescued') {
+            this.toastUi.show(res.data.message || 'Cư dân đã được một vị thần khác giải cứu trước!', 'info');
+            this.clearDrowning(citizenId);
+        } else if (res.status === 410 || res.data?.status === 'already_dead') {
+            this.toastUi.show(res.data?.message || 'Đã quá trễ, cư dân đã chìm xuống đáy biển.', 'danger');
+            this.confirmDeath(citizenId);
+        }
+    }
 
-        citizen.status = 'alive';
-        citizen.state = 'idle';
+    handleRescueSuccess(citizenId, data) {
+        const entry = this.drowningCitizens.get(citizenId);
+        const citizen = entry ? entry.citizen : null;
 
-        // Animate citizen lifting out of water back onto island
-        this.animateRescueFlight(citizen, targetX, targetZ, () => {
-            if (entry.onRescueCallback) {
-                entry.onRescueCallback(citizen);
+        this.clearDrowning(citizenId);
+
+        if (citizen) {
+            citizen.status = 'alive';
+            citizen.state = 'idle';
+
+            const safePos = data.safe_position || { x: 0, y: 0, z: 0 };
+
+            // Levitate and fly back to land animation
+            this.animateRescueFlight(citizen, safePos.x, safePos.z, () => {
+                if (entry && entry.onRescueCallback) {
+                    entry.onRescueCallback(citizen);
+                }
+            });
+        }
+
+        if (data.savior?.stats && this.onStatsUpdated) {
+            this.onStatsUpdated(data.savior.stats);
+        }
+
+        this.toastUi.show(data.message || `Đã cứu ${citizen?.name || 'cư dân'} thoát khỏi biển sâu!`, 'success');
+    }
+
+    clearDrowning(citizenId) {
+        const entry = this.drowningCitizens.get(citizenId);
+        if (entry) {
+            if (entry.beacon) {
+                entry.beacon.dispose();
             }
-        });
-
-        // Notify backend & update God rescued statistics
-        this.apiClient.rescueCitizen(citizenId).then((res) => {
-            if (res.ok && res.data?.god_stats) {
-                if (this.onStatsUpdated) this.onStatsUpdated(res.data.god_stats);
-            }
-        });
-
-        this.toastUi.show(`Đã cứu ${citizen.name} thoát khỏi biển sâu!`, 'success');
+            this.drowningCitizens.delete(citizenId);
+            this.alertUi.removeAlert(citizenId);
+        }
     }
 
     confirmDeath(citizenId) {
@@ -84,85 +150,66 @@ export class DrowningSystem {
         if (!entry) return;
 
         const citizen = entry.citizen;
-        this.drowningCitizens.delete(citizenId);
-        this.alertUi.removeAlert(citizenId);
+        this.clearDrowning(citizenId);
 
         citizen.status = 'dead';
         citizen.state = 'dead';
 
-        // Sinking animation into deep ocean
         this.animateSinking(citizen, () => {
             citizen.dispose();
             if (entry.onDeathCallback) {
                 entry.onDeathCallback(citizen);
             }
         });
-
-        // Notify backend that citizen has drowned (decrements population & updates God stats)
-        this.apiClient.drownCitizen(citizenId).then((res) => {
-            if (res.ok) {
-                if (res.data?.god_stats && this.onStatsUpdated) {
-                    this.onStatsUpdated(res.data.god_stats);
-                }
-                if (res.data?.world_population !== undefined && this.onWorldPopulationUpdated) {
-                    this.onWorldPopulationUpdated(res.data.world_population);
-                }
-            }
-        });
-
-        this.toastUi.show(`Biển đã nuốt chửng ${citizen.name}.`, 'danger');
     }
 
-    animateRescueFlight(citizen, targetX, targetZ, onComplete) {
-        const startPos = citizen.group.position.clone();
-        const duration = 1.0;
-        let elapsed = 0;
+    animateRescueFlight(citizen, targetX, targetZ, onDone) {
+        const startX = citizen.group.position.x;
+        const startY = citizen.group.position.y;
+        const startZ = citizen.group.position.z;
 
-        const flightInterval = setInterval(() => {
-            elapsed += 0.02;
-            const t = Math.min(elapsed / duration, 1.0);
-            const easeT = t * t * (3 - 2 * t); // smoothstep
+        let t = 0;
+        const animate = () => {
+            t += 0.035;
+            const progress = Math.min(t, 1.0);
+            const ease = 0.5 - 0.5 * Math.cos(progress * Math.PI);
 
-            citizen.group.position.x = startPos.x + (targetX - startPos.x) * easeT;
-            citizen.group.position.z = startPos.z + (targetZ - startPos.z) * easeT;
-            // High parabolic arc upward
-            citizen.group.position.y = startPos.y + Math.sin(t * Math.PI) * 5.0 + (2.0 - startPos.y) * t;
+            citizen.group.position.x = startX + (targetX - startX) * ease;
+            citizen.group.position.z = startZ + (targetZ - startZ) * ease;
 
-            if (t >= 1.0) {
-                clearInterval(flightInterval);
-                citizen.group.position.set(targetX, 2.0, targetZ);
-                if (onComplete) onComplete();
-            }
-        }, 20);
-    }
+            const arc = Math.sin(progress * Math.PI) * 5.0;
+            citizen.group.position.y = startY + (2.0 - startY) * ease + arc;
 
-    animateSinking(citizen, onComplete) {
-        let elapsed = 0;
-        const sinkInterval = setInterval(() => {
-            elapsed += 0.03;
-            citizen.group.position.y -= 0.08;
-            citizen.group.scale.multiplyScalar(0.96);
-
-            if (elapsed >= 1.2) {
-                clearInterval(sinkInterval);
-                if (onComplete) onComplete();
-            }
-        }, 30);
-    }
-
-    update(delta) {
-        const deltaMs = delta * 1000;
-        const toDrown = [];
-
-        this.drowningCitizens.forEach((entry, id) => {
-            entry.remainingTime -= deltaMs;
-            if (entry.remainingTime <= 0) {
-                toDrown.push(id);
+            if (progress < 1.0) {
+                requestAnimationFrame(animate);
             } else {
-                this.alertUi.updateAlert(id, entry.remainingTime);
+                citizen.group.position.set(targetX, 2.0, targetZ);
+                if (onDone) onDone();
             }
-        });
+        };
+        requestAnimationFrame(animate);
+    }
 
-        toDrown.forEach((id) => this.confirmDeath(id));
+    animateSinking(citizen, onDone) {
+        let t = 0;
+        const animate = () => {
+            t += 0.03;
+            citizen.group.position.y -= 0.04;
+            citizen.group.scale.multiplyScalar(0.97);
+
+            if (t < 1.0) {
+                requestAnimationFrame(animate);
+            } else {
+                if (onDone) onDone();
+            }
+        };
+        requestAnimationFrame(animate);
+    }
+
+    dispose() {
+        for (const entry of this.drowningCitizens.values()) {
+            if (entry.beacon) entry.beacon.dispose();
+        }
+        this.drowningCitizens.clear();
     }
 }

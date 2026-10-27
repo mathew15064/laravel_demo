@@ -9,12 +9,14 @@ import { CitizenPanel } from './ui/CitizenPanel.js';
 import { DrowningAlert } from './ui/DrowningAlert.js';
 import { FailureOverlay } from './ui/FailureOverlay.js';
 import { Toast } from './ui/Toast.js';
+import { GodProfileModal } from './ui/GodProfileModal.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
     const canvasContainer = document.getElementById('game-canvas-container');
     const hudContainer = document.getElementById('game-hud-container');
     const welcomeOverlay = document.getElementById('god-welcome-overlay');
     const godStatsModal = document.getElementById('god-stats-modal');
+    const godProfileModalContainer = document.getElementById('god-profile-modal');
     const islandPanelContainer = document.getElementById('island-panel-container');
     const citizenPanelContainer = document.getElementById('citizen-panel-container');
     const drowningAlertContainer = document.getElementById('drowning-alerts-container');
@@ -22,6 +24,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const toastContainer = document.getElementById('toast-container');
 
     if (!canvasContainer) return;
+
+    // Check for query param `?god=Athena` or `?god=Zeus` to set deity identity
+    const urlParams = new URLSearchParams(window.location.search);
+    const godParam = urlParams.get('god');
 
     const apiClient = new ApiClient();
     const toast = new Toast(toastContainer);
@@ -32,6 +38,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     let worldData = null;
 
     // 1. Initialize UI Singletons
+    const godProfileModal = new GodProfileModal(
+        godProfileModalContainer,
+        apiClient,
+        null,
+        (x, z) => activeParadiseWorld?.selectionSystem.focusOn(x, z)
+    );
+
     const godStats = new GodStats(godStatsModal, apiClient, (updatedGod) => {
         currentGod = updatedGod;
         hud.setGod(updatedGod);
@@ -50,6 +63,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (res.ok) {
                 window.location.reload();
             }
+        },
+        (god) => {
+            godProfileModal.show(god);
         }
     );
 
@@ -63,21 +79,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         islandPanel,
         citizenPanel,
         drowningAlert,
+        godProfileModal,
     };
 
     // 2. Fetch World State from Laravel Backend
     const timeoutSetting = parseInt(document.body.getAttribute('data-drowning-timeout') || '3000', 10);
 
     async function loadSimulation() {
+        // If ?god=Name query parameter is present, resolve that canonical god
+        if (godParam) {
+            const canonicalUuids = {
+                'Zeus': '11111111-2222-3333-4444-555555555555',
+                'Athena': '22222222-3333-4444-5555-666666666666',
+                'Ares': '33333333-4444-5555-6666-777777777777',
+                'Apollo': '44444444-5555-6666-7777-888888888888',
+            };
+            if (canonicalUuids[godParam]) {
+                apiClient.setGodUuid(canonicalUuids[godParam]);
+            }
+        }
+
         const res = await apiClient.fetchWorld();
 
         if (!res.ok || res.data?.code === 'DATABASE_UNAVAILABLE') {
-            // DATABASE OFFLINE -> Transform into Volcano Failure World!
             initVolcanoWorld();
             return;
         }
 
-        // DATABASE HEALTHY -> Transform into Paradise World!
         worldData = res.data;
         initParadiseWorld(worldData);
     }
@@ -125,6 +153,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         hudContainer.classList.remove('hidden');
 
         activeParadiseWorld = new ParadiseWorld(canvasContainer, apiClient, uiManager, timeoutSetting);
+        godProfileModal.realtimeClient = activeParadiseWorld.realtimeClient;
+
         window.__paradiseGame = {
             activeParadiseWorld,
             activeVolcanoWorld: null,
@@ -133,7 +163,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentGod,
         };
 
-        // Check God Identity
         const welcome = new GodWelcome(welcomeOverlay, apiClient, (god) => {
             currentGod = god;
             if (window.__paradiseGame) window.__paradiseGame.currentGod = god;
@@ -145,12 +174,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (data.god) {
             currentGod = data.god;
-            welcome.showReturningGod(data.god);
+            // If god query param set or already known, automatically enter
+            if (godParam) {
+                welcome.hide();
+                currentGod = data.god;
+                if (window.__paradiseGame) window.__paradiseGame.currentGod = currentGod;
+                activeParadiseWorld.populateWorld(data, currentGod);
+                toast.show(`Thần ${currentGod.name} đã ngự trị Quần Đảo Thiên Đường!`, 'success');
+            } else {
+                welcome.showReturningGod(data.god);
+            }
         } else {
             welcome.showRegistration();
         }
     }
 
-    // Launch world
     loadSimulation();
 });

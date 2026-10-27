@@ -2,10 +2,10 @@ import * as THREE from 'three';
 
 /**
  * Paradise Gods - Selection System
- * Raycasts clicks on 3D canvas to select Citizens (priority) or Islands.
+ * Raycasts clicks on 3D canvas to select Divine Avatars, Citizens, or Islands.
  */
 export class SelectionSystem {
-    constructor(camera, domElement, controls, citizenManager, islandManager, islandPanel, citizenPanel) {
+    constructor(camera, domElement, controls, citizenManager, islandManager, islandPanel, citizenPanel, godManager = null, onSelectGod = null) {
         this.camera = camera;
         this.domElement = domElement;
         this.controls = controls;
@@ -13,6 +13,8 @@ export class SelectionSystem {
         this.islandManager = islandManager;
         this.islandPanel = islandPanel;
         this.citizenPanel = citizenPanel;
+        this.godManager = godManager;
+        this.onSelectGod = onSelectGod;
 
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
@@ -22,6 +24,11 @@ export class SelectionSystem {
         this.pointerDownPos = new THREE.Vector2();
 
         this.initEvents();
+    }
+
+    setGodManager(godManager, onSelectGod = null) {
+        this.godManager = godManager;
+        if (onSelectGod) this.onSelectGod = onSelectGod;
     }
 
     initEvents() {
@@ -48,7 +55,25 @@ export class SelectionSystem {
 
         this.raycaster.setFromCamera(this.mouse, this.camera);
 
-        // 1. Raycast against Citizens FIRST (Priority per Requirement 18)
+        // 1. Raycast against Divine Avatars FIRST
+        if (this.godManager) {
+            const godMeshes = this.godManager.getGodMeshes();
+            const godHits = this.raycaster.intersectObjects(godMeshes, true);
+            if (godHits.length > 0) {
+                let hit = godHits[0].object;
+                while (hit.parent && !hit.userData?.godData) {
+                    hit = hit.parent;
+                }
+                const godData = hit.userData?.godData;
+                if (godData && this.onSelectGod) {
+                    this.clearSelection();
+                    this.onSelectGod(godData);
+                    return;
+                }
+            }
+        }
+
+        // 2. Raycast against Citizens
         const citizenMeshes = this.citizenManager.getCitizenMeshes();
         const citizenHits = this.raycaster.intersectObjects(citizenMeshes, true);
 
@@ -64,7 +89,7 @@ export class SelectionSystem {
             }
         }
 
-        // 2. Raycast against Islands
+        // 3. Raycast against Islands
         const islandMeshes = this.islandManager.getIslandMeshes();
         const islandHits = this.raycaster.intersectObjects(islandMeshes, true);
 
@@ -80,7 +105,7 @@ export class SelectionSystem {
             }
         }
 
-        // 3. Clicked water or empty space -> deselect
+        // 4. Clicked water or empty space -> deselect
         this.clearSelection();
     }
 

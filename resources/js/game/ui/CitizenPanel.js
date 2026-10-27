@@ -1,19 +1,33 @@
 /**
  * Paradise Gods - Selected Citizen Context Panel
+ * Enforces God ownership rules: Only creator can throw/rename, but ANY God can rescue!
  */
 export class CitizenPanel {
-    constructor(container, apiClient, onLiftCitizen, onCitizenRenamed) {
+    constructor(container, apiClient, onLiftCitizen, onCitizenRenamed, onRescueCitizen = null) {
         this.container = container;
         this.apiClient = apiClient;
         this.onLiftCitizen = onLiftCitizen;
         this.onCitizenRenamed = onCitizenRenamed;
+        this.onRescueCitizen = onRescueCitizen;
         this.currentCitizen = null;
+        this.currentGod = null;
+    }
+
+    setCurrentGod(god) {
+        this.currentGod = god;
     }
 
     show(citizen) {
         this.currentCitizen = citizen;
-        const statusLabel = citizen.status === 'drowning' ? '⚠ Đang chết đuối' : 'Đang sống';
-        const statusColor = citizen.status === 'drowning' ? 'text-rose-400' : 'text-emerald-400';
+        const isDrowning = citizen.status === 'drowning';
+        const statusLabel = isDrowning ? '⚠ Đang chết đuối!' : 'Đang sống';
+        const statusColor = isDrowning ? 'text-rose-400 font-bold animate-pulse' : 'text-emerald-400';
+
+        const creatorId = citizen.createdByGodId || citizen.data?.created_by_god_id;
+        const creatorName = citizen.creatorName || citizen.data?.creator_name || 'Vô danh';
+        const creatorColor = citizen.creatorColor || citizen.data?.creator_color || '#8b5cf6';
+
+        const isOwner = this.currentGod && (creatorId === this.currentGod.id || creatorId === this.currentGod.god_id);
 
         this.container.innerHTML = `
             <div class="pointer-events-auto p-5 rounded-3xl bg-slate-900/90 border border-slate-700/80 shadow-2xl backdrop-blur-xl text-white space-y-4 w-72 animate-fade-in relative">
@@ -30,7 +44,7 @@ export class CitizenPanel {
                 <div class="space-y-2 text-xs">
                     <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex justify-between items-center">
                         <span class="text-slate-400 font-mono">Trạng thái:</span>
-                        <span class="font-bold ${statusColor}">${statusLabel}</span>
+                        <span class="${statusColor}">${statusLabel}</span>
                     </div>
 
                     <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex justify-between items-center">
@@ -39,8 +53,11 @@ export class CitizenPanel {
                     </div>
 
                     <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex justify-between items-center">
-                        <span class="text-slate-400 font-mono">Được tạo bởi:</span>
-                        <span class="font-medium text-cyan-300">${citizen.creatorName || 'Vô danh'}</span>
+                        <span class="text-slate-400 font-mono">Sáng tạo bởi:</span>
+                        <div class="flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full" style="background-color: ${creatorColor}"></span>
+                            <span class="font-medium" style="color: ${creatorColor}">Thần ${creatorName}</span>
+                        </div>
                     </div>
 
                     <!-- Appearance Preview Swatches -->
@@ -53,35 +70,60 @@ export class CitizenPanel {
                     </div>
                 </div>
 
-                <!-- Action Buttons -->
+                <!-- Action Buttons based on ownership & status -->
                 <div class="space-y-2 pt-1">
-                    <button type="button" id="citizen-lift-btn"
-                            class="w-full py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 shadow-md shadow-cyan-500/20 transition-all flex items-center justify-center gap-1.5">
-                        <span>✋</span>
-                        <span>NHẤC LÊN / NÉM</span>
-                    </button>
+                    ${isDrowning ? `
+                        <!-- Any god can rescue a drowning citizen! -->
+                        <button type="button" id="citizen-rescue-btn"
+                                class="w-full py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 text-white shadow-lg shadow-rose-500/30 transition-all flex items-center justify-center gap-1.5 animate-pulse">
+                            <span>⚡</span>
+                            <span>PHÓNG THẦN LỰC CỨU NGAY!</span>
+                        </button>
+                    ` : ''}
 
-                    <button type="button" id="citizen-rename-btn"
-                            class="w-full py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-cyan-300 transition-all">
-                        Đổi tên cư dân
-                    </button>
+                    ${isOwner ? `
+                        <button type="button" id="citizen-lift-btn"
+                                class="w-full py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 shadow-md shadow-cyan-500/20 transition-all flex items-center justify-center gap-1.5">
+                            <span>✋</span>
+                            <span>NHẤC LÊN / NÉM</span>
+                        </button>
+
+                        <button type="button" id="citizen-rename-btn"
+                                class="w-full py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-cyan-300 transition-all">
+                            Đổi tên cư dân
+                        </button>
+                    ` : `
+                        ${!isDrowning ? `
+                            <div class="p-2 rounded-xl bg-slate-800/40 text-center text-[11px] text-slate-400 italic">
+                                Chỉ Thần ${creatorName} mới có quyền ném hoặc đổi tên.
+                            </div>
+                        ` : ''}
+                    `}
                 </div>
 
                 <!-- Inline Rename Form -->
-                <form id="citizen-rename-form" class="hidden pt-2 border-t border-slate-800 space-y-2">
-                    <input type="text" id="citizen-rename-input" required minlength="1" maxlength="40" value="${citizen.name}"
-                           class="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-400">
-                    <div class="flex gap-2">
-                        <button type="submit" class="flex-1 py-1 rounded-lg bg-cyan-500 text-slate-950 text-xs font-bold">LƯU</button>
-                        <button type="button" id="citizen-rename-cancel-btn" class="flex-1 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs">HỦY</button>
-                    </div>
-                </form>
+                ${isOwner ? `
+                    <form id="citizen-rename-form" class="hidden pt-2 border-t border-slate-800 space-y-2">
+                        <input type="text" id="citizen-rename-input" required minlength="1" maxlength="40" value="${citizen.name}"
+                               class="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-400">
+                        <div class="flex gap-2">
+                            <button type="submit" class="flex-1 py-1 rounded-lg bg-cyan-500 text-slate-950 text-xs font-bold">LƯU</button>
+                            <button type="button" id="citizen-rename-cancel-btn" class="flex-1 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs">HỦY</button>
+                        </div>
+                    </form>
+                ` : ''}
             </div>
         `;
 
         this.container.classList.remove('hidden');
 
         document.getElementById('citizen-panel-close-btn')?.addEventListener('click', () => this.hide());
+
+        document.getElementById('citizen-rescue-btn')?.addEventListener('click', () => {
+            if (this.onRescueCitizen) {
+                this.onRescueCitizen(citizen);
+            }
+        });
 
         document.getElementById('citizen-lift-btn')?.addEventListener('click', () => {
             if (this.onLiftCitizen) this.onLiftCitizen(citizen);
@@ -102,8 +144,8 @@ export class CitizenPanel {
             const res = await this.apiClient.renameCitizen(citizen.id, newName);
             if (res.ok) {
                 citizen.name = newName;
-                citizen.updateLabel(newName);
                 document.getElementById('citizen-panel-name').textContent = newName;
+                citizen.updateLabel(newName);
                 renameForm.classList.add('hidden');
                 if (this.onCitizenRenamed) this.onCitizenRenamed(citizen, newName);
             }
@@ -112,5 +154,6 @@ export class CitizenPanel {
 
     hide() {
         this.container.classList.add('hidden');
+        this.currentCitizen = null;
     }
 }

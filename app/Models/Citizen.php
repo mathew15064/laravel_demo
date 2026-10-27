@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Citizen extends Model
 {
@@ -34,6 +35,8 @@ class Citizen extends Model
     protected $fillable = [
         'island_id',
         'created_by_god_id',
+        'thrown_by_god_id',
+        'last_rescued_by_god_id',
         'name',
         'status',
         'skin_tone',
@@ -43,12 +46,18 @@ class Citizen extends Model
         'position_z',
         'last_island_id',
         'death_reason',
+        'drowning_started_at',
+        'drowning_deadline_at',
+        'drowning_version',
     ];
 
     protected $casts = [
         'position_x' => 'float',
         'position_y' => 'float',
         'position_z' => 'float',
+        'drowning_started_at' => 'integer',
+        'drowning_deadline_at' => 'integer',
+        'drowning_version' => 'integer',
     ];
 
     protected static function booted(): void
@@ -86,5 +95,20 @@ class Citizen extends Model
     public function god(): BelongsTo
     {
         return $this->belongsTo(God::class, 'created_by_god_id');
+    }
+
+    public function thrownByGod(): BelongsTo
+    {
+        return $this->belongsTo(God::class, 'thrown_by_god_id');
+    }
+
+    public function lastRescuedByGod(): BelongsTo
+    {
+        return $this->belongsTo(God::class, 'last_rescued_by_god_id');
+    }
+
+    public function rescues(): HasMany
+    {
+        return $this->hasMany(Rescue::class);
     }
 }

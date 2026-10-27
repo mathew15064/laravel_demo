@@ -2,18 +2,22 @@ import * as THREE from 'three';
 
 /**
  * Paradise Gods - Citizen Pick Up & Throw System
- * Allows dragging a citizen above the archipelago and launching them across islands or into water.
+ * Enforces ownership: Only the creator God can pick up and throw their citizen.
+ * Computes trajectory and notifies backend & multiplayer network.
  */
 export class ThrowSystem {
-    constructor(camera, domElement, controls, citizenManager) {
+    constructor(camera, domElement, controls, citizenManager, apiClient = null) {
         this.camera = camera;
         this.domElement = domElement;
         this.controls = controls;
         this.citizenManager = citizenManager;
+        this.apiClient = apiClient;
+
+        this.currentGod = null;
 
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
-        this.dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -4.0); // horizontal drag plane at y=4
+        this.dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -4.0);
         this.dragIntersection = new THREE.Vector3();
 
         this.draggedCitizen = null;
@@ -22,6 +26,10 @@ export class ThrowSystem {
         this.computedVelocity = new THREE.Vector3();
 
         this.initEvents();
+    }
+
+    setCurrentGod(god) {
+        this.currentGod = god;
     }
 
     initEvents() {
@@ -35,7 +43,6 @@ export class ThrowSystem {
     }
 
     handlePointerDown(e) {
-        // Only left click or primary touch
         if (e.button !== 0) return;
 
         const rect = this.domElement.getBoundingClientRect();
@@ -44,12 +51,10 @@ export class ThrowSystem {
 
         this.raycaster.setFromCamera(this.mouse, this.camera);
 
-        // Raycast against citizens
         const citizenMeshes = this.citizenManager.getCitizenMeshes();
         const intersects = this.raycaster.intersectObjects(citizenMeshes, true);
 
         if (intersects.length > 0) {
-            // Find root citizen
             let hitObj = intersects[0].object;
             while (hitObj.parent && !hitObj.userData?.citizenInstance) {
                 hitObj = hitObj.parent;
@@ -57,11 +62,20 @@ export class ThrowSystem {
 
             const citizen = hitObj.userData?.citizenInstance;
             if (citizen && citizen.status !== 'dead') {
+                // Ownership check: only creator God can pick up & throw!
+                const creatorId = citizen.createdByGodId || citizen.data?.created_by_god_id;
+                if (this.currentGod && creatorId && creatorId !== this.currentGod.id && creatorId !== this.currentGod.god_id) {
+                    if (this.onUnauthorizedThrow) {
+                        this.onUnauthorizedThrow(citizen);
+                    }
+                    return;
+                }
+
                 this.draggedCitizen = citizen;
                 citizen.isDragged = true;
                 citizen.isThrown = false;
-                citizen.group.position.y = 4.2; // lift into air
-                this.controls.enabled = false; // disable camera orbit while dragging!
+                citizen.group.position.y = 4.2;
+                this.controls.enabled = false;
 
                 this.previousPosition.copy(citizen.group.position);
                 this.previousTime = performance.now();
@@ -88,7 +102,6 @@ export class ThrowSystem {
             const dt = (now - this.previousTime) / 1000;
 
             if (dt > 0.01) {
-                // Compute instantaneous drag velocity
                 this.computedVelocity.set(
                     (this.dragIntersection.x - this.previousPosition.x) / dt,
                     0,
@@ -108,25 +121,43 @@ export class ThrowSystem {
 
         const citizen = this.draggedCitizen;
         this.draggedCitizen = null;
-        this.controls.enabled = true; // re-enable camera orbit
+        this.controls.enabled = true;
         citizen.isDragged = false;
 
         const speed = this.computedVelocity.length();
-        // Fast release (> 4.0 speed): throw citizen with upward arc!
+        let launchVelocity = new THREE.Vector3(0, -5.0, 0);
+
         if (speed > 4.0) {
-            citizen.isThrown = true;
-            // Cap throw velocity to reasonable bounds
             const cappedSpeed = Math.min(speed * 0.7, 35.0);
             const dir = this.computedVelocity.clone().normalize();
-            citizen.velocity.set(
+            launchVelocity.set(
                 dir.x * cappedSpeed,
-                Math.min(cappedSpeed * 0.5 + 4.0, 16.0), // upward launch arc
+                Math.min(cappedSpeed * 0.5 + 4.0, 16.0),
                 dir.z * cappedSpeed
             );
-        } else {
-            // Slow release: drop gently
-            citizen.velocity.set(0, -5.0, 0);
-            citizen.isThrown = true;
+        }
+
+        citizen.velocity.copy(launchVelocity);
+        citizen.isThrown = true;
+
+        // Authoritative throw API dispatch to backend
+        if (this.apiClient) {
+            this.apiClient.request(`/api/citizens/${citizen.id}/throw`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    god_uuid: this.apiClient.getGodUuid(),
+                    start_position: {
+                        x: citizen.group.position.x,
+                        y: citizen.group.position.y,
+                        z: citizen.group.position.z,
+                    },
+                    velocity: {
+                        x: launchVelocity.x,
+                        y: launchVelocity.y,
+                        z: launchVelocity.z,
+                    },
+                }),
+            });
         }
 
         if (this.onReleaseCallback) {

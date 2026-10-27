@@ -8,10 +8,12 @@ import { ThrowSystem } from '../systems/ThrowSystem.js';
 import { DrowningSystem } from '../systems/DrowningSystem.js';
 import { EffectsSystem } from '../systems/EffectsSystem.js';
 import { SelectionSystem } from '../systems/SelectionSystem.js';
+import { GodManager } from '../multiplayer/GodManager.js';
+import { RealtimeClient } from '../multiplayer/RealtimeClient.js';
 
 /**
  * Paradise Gods - Main 3D World (Thiên Đường Quần Đảo)
- * Manages Three.js rendering, OrbitControls, archipelago islands, citizens, and physics systems.
+ * Manages Three.js rendering, Archipelago, Citizens, Realtime Multiplayer Sync, and Physics.
  */
 export class ParadiseWorld {
     constructor(container, apiClient, uiManager, drowningTimeoutMs = 3000) {
@@ -45,7 +47,7 @@ export class ParadiseWorld {
         this.controls = new OrbitControls(this.camera, this.domElement);
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.05;
-        this.controls.maxPolarAngle = Math.PI / 2.15; // don't go below water level
+        this.controls.maxPolarAngle = Math.PI / 2.15;
         this.controls.minDistance = 15;
         this.controls.maxDistance = 175;
         this.controls.target.set(0, 2, 0);
@@ -57,17 +59,27 @@ export class ParadiseWorld {
         this.environment = new Environment(this.scene);
         this.effects = new EffectsSystem(this.scene);
 
+        // Multiplayer Managers
+        this.godManager = new GodManager(this.scene, (godData) => {
+            if (this.ui.godProfileModal) {
+                this.ui.godProfileModal.show(godData);
+            }
+        });
+
+        this.realtimeClient = new RealtimeClient();
+
         this.drowningSystem = new DrowningSystem(
+            this.scene,
             this.apiClient,
             this.ui.drowningAlert,
             this.ui.toast,
             this.effects
         );
-        this.drowningSystem.setTimeoutDuration(this.drowningTimeoutMs);
 
         this.drowningSystem.onStatsUpdated = (stats) => {
             if (this.currentGod) {
                 this.currentGod.stats = stats;
+                this.ui.hud.setGod(this.currentGod);
             }
         };
 
@@ -75,9 +87,18 @@ export class ParadiseWorld {
             this.ui.hud.setWorldPopulation(pop);
         };
 
-        this.throwSystem = new ThrowSystem(this.camera, this.domElement, this.controls, {
-            getCitizenMeshes: () => this.citizens.map((c) => c.group),
-        });
+        this.throwSystem = new ThrowSystem(
+            this.camera,
+            this.domElement,
+            this.controls,
+            { getCitizenMeshes: () => this.citizens.map((c) => c.group) },
+            this.apiClient
+        );
+
+        this.throwSystem.onUnauthorizedThrow = (citizen) => {
+            const creator = citizen.creatorName || 'Vô Danh';
+            this.ui.toast.show(`Chỉ Thần ${creator} mới có quyền nhấc hoặc ném cư dân này!`, 'warning');
+        };
 
         this.throwSystem.onPickupCallback = (citizen) => {
             this.ui.toast.show(`Thần đã nhấc ${citizen.name} lên không trung!`);
@@ -96,10 +117,17 @@ export class ParadiseWorld {
             { getCitizenMeshes: () => this.citizens.map((c) => c.group) },
             { getIslandMeshes: () => this.islands.map((i) => i.group) },
             this.ui.islandPanel,
-            this.ui.citizenPanel
+            this.ui.citizenPanel,
+            this.godManager,
+            (godData) => {
+                if (this.ui.godProfileModal) {
+                    this.ui.godProfileModal.show(godData);
+                }
+            }
         );
 
         this.initCallbacks();
+        this.initMultiplayerEvents();
 
         this.clock = new THREE.Clock();
         this.isRunning = true;
@@ -117,15 +145,19 @@ export class ParadiseWorld {
     }
 
     initCallbacks() {
-        // When Island Panel requests new citizen creation
+        // Island Panel citizen creation
         this.ui.islandPanel.onCreateCitizen = async (island, name) => {
             const res = await this.apiClient.createCitizen(island.id, name);
             if (res.ok && res.data?.citizen) {
                 this.spawnCitizen(res.data.citizen, island);
+                island.data.population = res.data.island_population;
                 island.updateLabel(null, res.data.island_population);
+                const popEl = document.getElementById('island-panel-population');
+                if (popEl) popEl.textContent = res.data.island_population;
                 this.ui.hud.setWorldPopulation(res.data.world_population);
                 if (res.data.god_stats && this.currentGod) {
                     this.currentGod.stats = res.data.god_stats;
+                    this.ui.hud.setGod(this.currentGod);
                 }
                 this.ui.toast.show(`✨ ${res.data.message}`, 'success');
             } else {
@@ -133,28 +165,223 @@ export class ParadiseWorld {
             }
         };
 
-        // When Island Panel requests camera focus
+        // Island focus
         this.ui.islandPanel.onFocusIsland = (x, z) => {
             this.selectionSystem.focusOn(x, z, 32);
         };
 
-        // When Island is renamed
+        // Island renamed
         this.ui.islandPanel.onIslandRenamed = (island, newName) => {
             this.ui.toast.show(`Đã đổi tên đảo thành ${newName}.`, 'info');
         };
 
-        // When Citizen is lifted from Citizen Panel
+        // Island claimed
+        this.ui.islandPanel.onIslandClaimed = (island, islandData) => {
+            this.ui.toast.show(`👑 Ngài đã xác lập quyền cai quản ${island.name}!`, 'success');
+        };
+
+        // Citizen Panel lift/throw
         this.ui.citizenPanel.onLiftCitizen = (citizen) => {
+            const creatorId = citizen.createdByGodId || citizen.data?.created_by_god_id;
+            if (this.currentGod && creatorId && creatorId !== this.currentGod.id && creatorId !== this.currentGod.god_id) {
+                this.ui.toast.show(`Chỉ Thần ${citizen.creatorName} mới có quyền ném cư dân này!`, 'warning');
+                return;
+            }
+
             citizen.group.position.y = 5.0;
-            citizen.velocity.set((Math.random() - 0.5) * 14, 12.0, (Math.random() - 0.5) * 14);
+            const vx = (Math.random() - 0.5) * 14;
+            const vz = (Math.random() - 0.5) * 14;
+            citizen.velocity.set(vx, 12.0, vz);
             citizen.isThrown = true;
             this.ui.citizenPanel.hide();
+
+            this.apiClient.request(`/api/citizens/${citizen.id}/throw`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    god_uuid: this.apiClient.getGodUuid(),
+                    start_position: { x: citizen.group.position.x, y: 5.0, z: citizen.group.position.z },
+                    velocity: { x: vx, y: 12.0, z: vz },
+                }),
+            });
+
             this.ui.toast.show(`Thần đã phóng ${citizen.name} lên không trung!`);
         };
+
+        // Citizen Panel rescue
+        this.ui.citizenPanel.onRescueCitizen = (citizen) => {
+            this.drowningSystem.rescueCitizen(citizen.id);
+            this.ui.citizenPanel.hide();
+        };
+
+        // HUD click on online god
+        this.ui.hud.onSelectOnlineGod = (god) => {
+            if (this.ui.godProfileModal) {
+                this.ui.godProfileModal.show(god);
+            }
+        };
+    }
+
+    initMultiplayerEvents() {
+        // 1. God joined
+        this.realtimeClient.on('god.joined', (payload) => {
+            const godId = payload.god_id;
+            if (this.currentGod && (this.currentGod.id === godId || this.currentGod.uuid === payload.uuid)) {
+                return;
+            }
+            this.godManager.addGod(payload);
+            this.ui.hud.updateOnlineGods(this.godManager.onlineGodsList);
+            this.ui.toast.show(payload.message || `✨ Vị thần ${payload.name} đã giáng thế!`, 'info');
+        });
+
+        // 2. God left
+        this.realtimeClient.on('god.left', (payload) => {
+            this.godManager.removeGod(payload.god_id);
+            this.ui.hud.addRecentLeave(payload.god_id, payload.name);
+            this.ui.toast.show(payload.message || `○ ${payload.name} — vừa rời khỏi thiên đường.`, 'info');
+        });
+
+        // 3. God moved
+        this.realtimeClient.on('god.moved', (payload) => {
+            this.godManager.updateGodPosition(payload.god_id, payload.position);
+        });
+
+        // 4. Citizen created
+        this.realtimeClient.on('citizen.created', (payload) => {
+            const citData = payload.citizen;
+            if (!citData) return;
+
+            let citizen = this.citizens.find((c) => c.id === citData.id);
+            if (!citizen) {
+                const island = this.islands.find((i) => i.id === payload.island_id) || this.islands[0];
+                this.spawnCitizen(citData, island);
+            }
+            if (payload.island_id) {
+                const isl = this.islands.find((i) => i.id === payload.island_id);
+                if (isl) isl.updateLabel(null, isl.data.population + 1);
+            }
+            this.ui.hud.setWorldPopulation(this.citizens.length);
+            this.ui.toast.show(payload.message, 'info');
+        });
+
+        // 5. Citizen thrown
+        this.realtimeClient.on('citizen.thrown', (payload) => {
+            const cit = this.citizens.find((c) => c.id === payload.citizen_id);
+            if (!cit) return;
+
+            // Launch synchronized ballistic arc
+            if (payload.start_position && payload.velocity) {
+                cit.group.position.set(payload.start_position.x, payload.start_position.y, payload.start_position.z);
+                cit.velocity.set(payload.velocity.x, payload.velocity.y, payload.velocity.z);
+                cit.isThrown = true;
+            }
+
+            if (payload.outcome === 'landed_ocean') {
+                setTimeout(() => {
+                    this.drowningSystem.startDrowning(
+                        cit,
+                        payload.drowning_deadline_at,
+                        payload.drowning_version || 1
+                    );
+                }, (payload.flight_time || 1.0) * 1000);
+            }
+
+            this.ui.toast.show(payload.message, 'info');
+        });
+
+        // 6. Citizen rescued
+        this.realtimeClient.on('citizen.rescued', (payload) => {
+            const citizen = this.citizens.find((c) => c.id === payload.citizen_id);
+            const saviorAvatar = this.godManager.getAvatar(payload.savior_id);
+
+            // Play divine rescue beam from savior avatar to citizen!
+            if (saviorAvatar && citizen) {
+                saviorAvatar.playRescueBeam(citizen.group.position);
+            }
+
+            this.drowningSystem.handleRescueSuccess(payload.citizen_id, payload);
+
+            if (payload.target_island_id) {
+                const island = this.islands.find((i) => i.id === payload.target_island_id);
+                if (island && citizen) {
+                    citizen.setIsland(island);
+                }
+            }
+
+            this.ui.toast.show(payload.message || `✨ Vị thần đã cứu vớt ${payload.citizen_name}!`, 'success');
+        });
+
+        // 7. Citizen drowned
+        this.realtimeClient.on('citizen.drowned', (payload) => {
+            this.drowningSystem.confirmDeath(payload.citizen_id);
+            const idx = this.citizens.findIndex((c) => c.id === payload.citizen_id);
+            if (idx !== -1) {
+                this.citizens.splice(idx, 1);
+            }
+            this.ui.hud.setWorldPopulation(this.citizens.length);
+            this.ui.toast.show(payload.message || `🌊 Cư dân đã chìm xuống đại dương.`, 'warning');
+        });
+
+        // 8. Citizen renamed
+        this.realtimeClient.on('citizen.renamed', (payload) => {
+            const cit = this.citizens.find((c) => c.id === payload.citizen_id);
+            if (cit) {
+                cit.updateLabel(payload.name);
+            }
+        });
+
+        // 9. Island claimed
+        this.realtimeClient.on('island.claimed', (payload) => {
+            const isl = this.islands.find((i) => i.id === payload.island_id);
+            if (isl) {
+                isl.updateLabel(null, null, {
+                    governed_by_god_id: payload.governed_by_god_id,
+                    governing_god: {
+                        id: payload.governed_by_god_id,
+                        name: payload.governing_god_name,
+                        god_color: payload.governing_god_color,
+                    },
+                    banner_name: payload.banner_name,
+                });
+            }
+            this.ui.toast.show(`👑 Thần ${payload.governing_god_name} đã xác lập quyền cai quản ${payload.island_name}!`, 'info');
+        });
+
+        // 10. Island renamed
+        this.realtimeClient.on('island.renamed', (payload) => {
+            const isl = this.islands.find((i) => i.id === payload.island_id);
+            if (isl) {
+                isl.updateLabel(payload.name);
+            }
+        });
+
+        // 11. Divine Blessing
+        this.realtimeClient.on('divine.blessing', (payload) => {
+            const targetAvatar = this.godManager.getAvatar(payload.target_id);
+            if (targetAvatar) {
+                targetAvatar.playBlessingBurst();
+            } else if (this.currentGod && this.currentGod.id === payload.target_id) {
+                this.effects.createBirthSpark(this.camera.position.x, 20, this.camera.position.z);
+            }
+            this.ui.toast.show(payload.message, 'success');
+        });
+
+        // 12. Divine Emote
+        this.realtimeClient.on('divine.emote', (payload) => {
+            this.ui.toast.show(payload.message, 'info');
+        });
+
+        // 13. World Reset
+        this.realtimeClient.on('world.reset', () => {
+            this.ui.toast.show('Thế giới đã được tái khởi nguyên. Đang tải lại...', 'warning');
+            setTimeout(() => window.location.reload(), 1500);
+        });
     }
 
     populateWorld(data, god) {
         this.currentGod = god;
+        this.throwSystem.setCurrentGod(god);
+        this.ui.citizenPanel.setCurrentGod(god);
+        this.ui.islandPanel.setCurrentGod(god);
 
         // 1. Create Islands
         (data.islands || []).forEach((islData) => {
@@ -165,22 +392,39 @@ export class ParadiseWorld {
         // 2. Create Citizens
         (data.citizens || []).forEach((citData) => {
             const island = this.islands.find((i) => i.id === citData.island_id) || this.islands[0];
-            this.spawnCitizen(citData, island);
+            const citizen = this.spawnCitizen(citData, island);
+
+            // If already drowning on load, initialize drowning countdown
+            if (citData.status === 'drowning') {
+                this.drowningSystem.startDrowning(
+                    citizen,
+                    citData.drowning_deadline_at,
+                    citData.drowning_version || 1
+                );
+            }
         });
 
-        // 3. Update HUD
+        // 3. Sync Online Gods Presence & Avatars
+        this.godManager.syncOnlineGods(data.online_gods || [], god?.id);
+
+        // 4. Update HUD
         this.ui.hud.setGod(god);
         this.ui.hud.setWorldPopulation(data.world_population ?? this.citizens.length);
+        this.ui.hud.updateOnlineGods(this.godManager.onlineGodsList);
+
+        // 5. Connect WebSocket Realtime Network
+        this.realtimeClient.connect(god);
     }
 
     spawnCitizen(data, island) {
         const citizen = new Citizen(this.scene, data);
         citizen.setIsland(island);
+        citizen.createdByGodId = data.created_by_god_id;
+        citizen.creatorColor = data.creator_color;
 
         // Hook landing callbacks
         citizen.onLandedIslandCallback = (cit, newIsland, oldIsland, isNewIsland) => {
             if (isNewIsland) {
-                // Landed on a DIFFERENT island!
                 this.apiClient.moveCitizen(cit.id, newIsland.id, cit.group.position.x, cit.group.position.z).then((res) => {
                     if (res.ok) {
                         if (oldIsland && res.data?.old_island_population !== undefined) {
@@ -196,19 +440,22 @@ export class ParadiseWorld {
         };
 
         citizen.onFellInWaterCallback = (cit) => {
-            // Trigger Drowning System!
+            const timeoutMs = this.drowningTimeoutMs || 3000;
+            const deadlineAt = Date.now() + timeoutMs;
+            this.apiClient.markDrowning(cit.id);
             this.drowningSystem.startDrowning(
                 cit,
+                deadlineAt,
+                (cit.data?.drowning_version || 0) + 1,
                 (rescuedCit) => {
-                    // Rescued callback
                     this.effects.createBirthSpark(rescuedCit.group.position.x, 2.0, rescuedCit.group.position.z);
                 },
                 (deadCit) => {
-                    // Death callback: remove citizen from active tracking array
                     const idx = this.citizens.indexOf(deadCit);
                     if (idx !== -1) {
                         this.citizens.splice(idx, 1);
                     }
+                    this.ui.hud.setWorldPopulation(this.citizens.length);
                     if (deadCit.currentIsland) {
                         deadCit.currentIsland.updateLabel(null, Math.max(0, deadCit.currentIsland.data.population - 1));
                     }
@@ -232,11 +479,17 @@ export class ParadiseWorld {
         this.ocean.update(elapsed);
         this.environment.update(elapsed);
         this.effects.update(delta);
+        this.godManager.update(delta, elapsed);
         this.drowningSystem.update(delta);
 
         this.citizens.forEach((citizen) => {
             citizen.update(delta, elapsed, this.islands);
         });
+
+        // Send local God movement to network (throttled)
+        if (this.currentGod) {
+            this.realtimeClient.sendMove(this.camera.position, this.controls.target);
+        }
 
         this.renderer.render(this.scene, this.camera);
     }
@@ -245,8 +498,11 @@ export class ParadiseWorld {
         this.isRunning = false;
         window.removeEventListener('resize', this.onResize);
 
+        this.realtimeClient.disconnect();
         this.selectionSystem.dispose();
         this.throwSystem.dispose();
+        this.drowningSystem.dispose();
+        this.godManager.dispose();
         this.effects.dispose();
         this.ocean.dispose();
 

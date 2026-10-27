@@ -2,7 +2,8 @@ import * as THREE from 'three';
 
 /**
  * Paradise Gods - Procedural Island
- * Creates stylized low-poly island with sand, grass terrain, palm trees, houses, docks, and labels.
+ * Creates stylized low-poly island with sand, grass terrain, palm trees, houses, docks,
+ * governing God banner/aura, and labels.
  */
 export class Island {
     constructor(scene, islandData) {
@@ -22,6 +23,7 @@ export class Island {
 
         this.buildTerrain();
         this.buildDecorations();
+        this.buildGovernanceBanner();
         this.buildLabel();
         this.buildHighlightRing();
 
@@ -29,10 +31,10 @@ export class Island {
     }
 
     buildTerrain() {
-        // 1. Sand Beach Base (tapered cylinder / cone)
+        // 1. Sand Beach Base
         const sandGeo = new THREE.CylinderGeometry(this.radius, this.radius * 1.25, 2.2, 18);
         const sandMat = new THREE.MeshStandardMaterial({
-            color: 0xf5d09b, // Warm tropical golden sand
+            color: 0xf5d09b,
             roughness: 0.85,
             flatShading: true,
         });
@@ -60,7 +62,7 @@ export class Island {
         grassMesh.userData = { isIsland: true, islandId: this.id };
         this.group.add(grassMesh);
 
-        // 3. Central Hill / Elevated ridge for depth
+        // 3. Central Hill / Elevated ridge
         const hillRadius = grassRadius * 0.55;
         const hillGeo = new THREE.ConeGeometry(hillRadius, 1.8, 12);
         const hillMesh = new THREE.Mesh(hillGeo, grassMat);
@@ -108,7 +110,6 @@ export class Island {
         const palmGroup = new THREE.Group();
         palmGroup.position.set(x, y, z);
 
-        // Trunk: slight lean
         const trunkGeo = new THREE.CylinderGeometry(0.12, 0.22, 2.8, 6);
         const trunkMat = new THREE.MeshStandardMaterial({ color: 0x854d0e, roughness: 0.9, flatShading: true });
         const trunk = new THREE.Mesh(trunkGeo, trunkMat);
@@ -118,7 +119,6 @@ export class Island {
         trunk.castShadow = true;
         palmGroup.add(trunk);
 
-        // Fronds: 5 leaf cones
         const leafMat = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.6, flatShading: true });
         for (let i = 0; i < 5; i++) {
             const leafGeo = new THREE.ConeGeometry(0.7, 1.8, 4);
@@ -139,7 +139,6 @@ export class Island {
         houseGroup.position.set(x, y, z);
         houseGroup.rotation.y = rotY;
 
-        // Base walls (plaster/timber)
         const wallGeo = new THREE.BoxGeometry(1.6, 1.2, 1.4);
         const wallMat = new THREE.MeshStandardMaterial({ color: 0xfef08a, roughness: 0.8, flatShading: true });
         const walls = new THREE.Mesh(wallGeo, wallMat);
@@ -147,7 +146,6 @@ export class Island {
         walls.castShadow = true;
         houseGroup.add(walls);
 
-        // Roof (terracotta orange / tile)
         const roofGeo = new THREE.ConeGeometry(1.4, 1.0, 4);
         const roofMat = new THREE.MeshStandardMaterial({ color: 0xe11d48, roughness: 0.7, flatShading: true });
         const roof = new THREE.Mesh(roofGeo, roofMat);
@@ -155,13 +153,6 @@ export class Island {
         roof.rotation.y = Math.PI / 4;
         roof.castShadow = true;
         houseGroup.add(roof);
-
-        // Small door
-        const doorGeo = new THREE.BoxGeometry(0.4, 0.6, 0.05);
-        const doorMat = new THREE.MeshStandardMaterial({ color: 0x451a03, roughness: 0.9 });
-        const door = new THREE.Mesh(doorGeo, doorMat);
-        door.position.set(0, 0.35, 0.72);
-        houseGroup.add(door);
 
         this.group.add(houseGroup);
     }
@@ -178,101 +169,121 @@ export class Island {
 
     createDock() {
         const dockGroup = new THREE.Group();
-        const angle = -Math.PI / 3;
-        const startDist = this.radius * 0.85;
-        dockGroup.position.set(Math.cos(angle) * startDist, 0.4, Math.sin(angle) * startDist);
+        const angle = 0.3;
+        const dockX = Math.cos(angle) * (this.radius * 0.9);
+        const dockZ = Math.sin(angle) * (this.radius * 0.9);
+        dockGroup.position.set(dockX, 0.45, dockZ);
         dockGroup.rotation.y = -angle;
 
-        // Wooden walkway planks
-        const dockGeo = new THREE.BoxGeometry(1.4, 0.15, 3.8);
-        const dockMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.9, flatShading: true });
-        const dock = new THREE.Mesh(dockGeo, dockMat);
-        dock.position.z = 1.8;
-        dock.castShadow = true;
-        dockGroup.add(dock);
-
-        // Pilings
-        const pilGeo = new THREE.CylinderGeometry(0.08, 0.08, 1.4, 5);
-        for (const pz of [0.8, 2.2, 3.5]) {
-            for (const px of [-0.6, 0.6]) {
-                const pil = new THREE.Mesh(pilGeo, dockMat);
-                pil.position.set(px, -0.6, pz);
-                dockGroup.add(pil);
-            }
-        }
+        const plankGeo = new THREE.BoxGeometry(1.8, 0.18, 4.2);
+        const plankMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.9 });
+        const planks = new THREE.Mesh(plankGeo, plankMat);
+        planks.position.z = 1.5;
+        planks.castShadow = true;
+        dockGroup.add(planks);
 
         this.group.add(dockGroup);
     }
 
     createLighthouse() {
         const lightGroup = new THREE.Group();
-        lightGroup.position.set(0, 2.2, 0);
+        lightGroup.position.set(0, 2.5, 0);
 
-        // Tower
-        const towerGeo = new THREE.CylinderGeometry(0.7, 1.2, 5.0, 8);
-        const towerMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.6, flatShading: true });
+        const towerGeo = new THREE.CylinderGeometry(0.7, 1.1, 5.5, 12);
+        const towerMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.6 });
         const tower = new THREE.Mesh(towerGeo, towerMat);
-        tower.position.y = 2.5;
+        tower.position.y = 2.75;
         tower.castShadow = true;
         lightGroup.add(tower);
 
-        // Red stripe bands
-        const bandGeo = new THREE.CylinderGeometry(0.85, 0.95, 0.8, 8);
-        const bandMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.7, flatShading: true });
-        const band = new THREE.Mesh(bandGeo, bandMat);
-        band.position.y = 2.8;
-        lightGroup.add(band);
-
-        // Glass lantern
-        const lanternGeo = new THREE.CylinderGeometry(0.65, 0.65, 0.9, 8);
+        const lanternGeo = new THREE.CylinderGeometry(0.8, 0.8, 0.9, 8);
         const lanternMat = new THREE.MeshStandardMaterial({
             color: 0xfef08a,
             emissive: 0xfef08a,
-            emissiveIntensity: 0.8,
-            transparent: true,
-            opacity: 0.9,
+            emissiveIntensity: 0.9,
         });
         const lantern = new THREE.Mesh(lanternGeo, lanternMat);
-        lantern.position.y = 5.4;
+        lantern.position.y = 5.6;
         lightGroup.add(lantern);
-
-        // Lighthouse point light
-        const light = new THREE.PointLight(0xfef08a, 2.0, 15);
-        light.position.y = 5.5;
-        lightGroup.add(light);
 
         this.group.add(lightGroup);
     }
 
+    buildGovernanceBanner() {
+        if (this.bannerGroup) {
+            this.group.remove(this.bannerGroup);
+        }
+
+        const govGod = this.data.governing_god;
+        const colorHex = govGod?.god_color || '#8b5cf6';
+        const colorInt = parseInt(colorHex.replace('#', '0x'), 16);
+
+        if (!this.data.governed_by_god_id) return;
+
+        this.bannerGroup = new THREE.Group();
+        this.bannerGroup.position.set(0.5, 3.2, -0.5);
+
+        // Flagpole
+        const poleGeo = new THREE.CylinderGeometry(0.06, 0.08, 4.2, 8);
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.8, roughness: 0.3 });
+        const pole = new THREE.Mesh(poleGeo, poleMat);
+        pole.position.y = 2.1;
+        this.bannerGroup.add(pole);
+
+        // Flag banner cloth
+        const flagGeo = new THREE.BoxGeometry(1.6, 0.9, 0.05);
+        const flagMat = new THREE.MeshStandardMaterial({
+            color: colorInt,
+            emissive: colorInt,
+            emissiveIntensity: 0.3,
+            roughness: 0.6,
+        });
+        const flag = new THREE.Mesh(flagGeo, flagMat);
+        flag.position.set(0.85, 3.6, 0);
+        this.bannerGroup.add(flag);
+
+        this.group.add(this.bannerGroup);
+    }
+
     buildLabel() {
         const canvas = document.createElement('canvas');
-        canvas.width = 256;
-        canvas.height = 80;
+        canvas.width = 280;
+        canvas.height = 96;
         const ctx = canvas.getContext('2d');
 
-        // Dark pill background
+        const govGod = this.data.governing_god;
+        const borderColor = govGod?.god_color || '#38bdf8';
+
         ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-        ctx.strokeStyle = '#38bdf8';
-        ctx.lineWidth = 3;
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 3.5;
         ctx.beginPath();
         if (ctx.roundRect) {
-            ctx.roundRect(6, 6, 244, 68, 12);
+            ctx.roundRect(6, 6, 268, 84, 14);
         } else {
-            ctx.rect(6, 6, 244, 68);
+            ctx.rect(6, 6, 268, 84);
         }
         ctx.fill();
         ctx.stroke();
 
-        // Island Name
         ctx.font = 'bold 22px system-ui, sans-serif';
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
-        ctx.fillText(this.name, 128, 36);
+        ctx.fillText(this.name, 140, 34);
 
-        // Population
-        ctx.font = '14px monospace, sans-serif';
-        ctx.fillStyle = '#38bdf8';
-        ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 128, 60);
+        if (this.data.banner_name) {
+            ctx.font = 'italic 12px system-ui, sans-serif';
+            ctx.fillStyle = borderColor;
+            ctx.fillText(this.data.banner_name, 140, 54);
+
+            ctx.font = '13px monospace, sans-serif';
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 76);
+        } else {
+            ctx.font = '14px monospace, sans-serif';
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 64);
+        }
 
         this.labelTexture = new THREE.CanvasTexture(canvas);
         const spriteMat = new THREE.SpriteMaterial({
@@ -281,28 +292,37 @@ export class Island {
             depthTest: false,
         });
         this.labelSprite = new THREE.Sprite(spriteMat);
-        this.labelSprite.scale.set(4.2, 1.3, 1);
-        this.labelSprite.position.set(0, 5.2, 0);
+        this.labelSprite.scale.set(4.6, 1.5, 1);
+        this.labelSprite.position.set(0, 6.2, 0);
         this.group.add(this.labelSprite);
     }
 
-    updateLabel(newName = null, newPopulation = null) {
+    updateLabel(newName = null, newPopulation = null, newGovernance = null) {
         if (newName !== null) this.name = newName;
         if (newPopulation !== null) this.data.population = newPopulation;
+        if (newGovernance !== null) {
+            this.data.governed_by_god_id = newGovernance.governed_by_god_id;
+            this.data.governing_god = newGovernance.governing_god;
+            this.data.banner_name = newGovernance.banner_name;
+            this.buildGovernanceBanner();
+        }
 
         const canvas = document.createElement('canvas');
-        canvas.width = 256;
-        canvas.height = 80;
+        canvas.width = 280;
+        canvas.height = 96;
         const ctx = canvas.getContext('2d');
 
+        const govGod = this.data.governing_god;
+        const borderColor = govGod?.god_color || '#38bdf8';
+
         ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-        ctx.strokeStyle = '#38bdf8';
-        ctx.lineWidth = 3;
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 3.5;
         ctx.beginPath();
         if (ctx.roundRect) {
-            ctx.roundRect(6, 6, 244, 68, 12);
+            ctx.roundRect(6, 6, 268, 84, 14);
         } else {
-            ctx.rect(6, 6, 244, 68);
+            ctx.rect(6, 6, 268, 84);
         }
         ctx.fill();
         ctx.stroke();
@@ -310,11 +330,21 @@ export class Island {
         ctx.font = 'bold 22px system-ui, sans-serif';
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
-        ctx.fillText(this.name, 128, 36);
+        ctx.fillText(this.name, 140, 34);
 
-        ctx.font = '14px monospace, sans-serif';
-        ctx.fillStyle = '#38bdf8';
-        ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 128, 60);
+        if (this.data.banner_name) {
+            ctx.font = 'italic 12px system-ui, sans-serif';
+            ctx.fillStyle = borderColor;
+            ctx.fillText(this.data.banner_name, 140, 54);
+
+            ctx.font = '13px monospace, sans-serif';
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 76);
+        } else {
+            ctx.font = '14px monospace, sans-serif';
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 64);
+        }
 
         this.labelTexture.image = canvas;
         this.labelTexture.needsUpdate = true;

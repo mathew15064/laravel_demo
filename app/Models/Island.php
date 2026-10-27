@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
 
@@ -19,6 +20,8 @@ class Island extends Model
         'radius',
         'type',
         'seed',
+        'governed_by_god_id',
+        'banner_name',
     ];
 
     protected $casts = [
@@ -26,6 +29,7 @@ class Island extends Model
         'world_z' => 'float',
         'radius' => 'float',
         'seed' => 'integer',
+        'governed_by_god_id' => 'integer',
     ];
 
     protected $appends = [
@@ -44,6 +48,11 @@ class Island extends Model
     public function citizens(): HasMany
     {
         return $this->hasMany(Citizen::class);
+    }
+
+    public function governingGod(): BelongsTo
+    {
+        return $this->belongsTo(God::class, 'governed_by_god_id');
     }
 
     /**

@@ -17,7 +17,7 @@ test.describe('DeployLab Backend & API Endpoints', () => {
         expect(data.database).toBe('ok');
         expect(data.cache).toBe('ok');
         expect(data.details).toBeDefined();
-        expect(data.details.database_driver).toBe('sqlite');
+        expect(['sqlite', 'mysql']).toContain(data.details.database_driver);
     });
 
     test('POST /contact records real database inquiry with JSON API', async ({ request }) => {

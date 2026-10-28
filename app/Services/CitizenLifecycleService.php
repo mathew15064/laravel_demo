@@ -76,8 +76,11 @@ class CitizenLifecycleService
             $event = WorldEventBroadcaster::broadcast('citizen.drowned', null, $c->id, [
                 'citizen_id' => $c->id,
                 'citizen_name' => $c->name,
+                'actor_god_id' => null,
+                'created_by_god_id' => $c->created_by_god_id,
                 'owner_id' => $c->created_by_god_id,
                 'reason' => $reason,
+                'version' => $c->version,
                 'message' => "🌊 {$c->name} đã chìm vào đại dương vô tận.",
             ]);
 

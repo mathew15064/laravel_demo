@@ -1,3 +1,4 @@
+import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import Redis from 'ioredis';
 
@@ -7,28 +8,29 @@ const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 const REDIS_PASSWORD = process.env.REDIS_PASSWORD || '123456';
 const LARAVEL_API_URL = process.env.APP_URL || 'http://127.0.0.1:8008';
 
-console.log(`[Paradise-WS] Starting WebSocket server on port ${PORT}...`);
+console.log(`[Paradise-WS] Starting WebSocket & Broadcast server on port ${PORT}...`);
 
-// Redis command client
-const redisCmd = new Redis({
-    host: REDIS_HOST,
-    port: REDIS_PORT,
-    password: REDIS_PASSWORD,
-    retryStrategy: (times) => Math.min(times * 100, 3000),
-});
+// Redis command client with silent error catch (safe if Redis is absent on VPS)
+let redisCmd = null;
+let redisSub = null;
 
-// Redis subscriber client
-const redisSub = new Redis({
-    host: REDIS_HOST,
-    port: REDIS_PORT,
-    password: REDIS_PASSWORD,
-    retryStrategy: (times) => Math.min(times * 100, 3000),
-});
-
-const wss = new WebSocketServer({ port: PORT });
-
-// Clean up stale presence on server boot
-redisCmd.del('paradise:online_gods').catch(() => {});
+try {
+    redisCmd = new Redis({
+        host: REDIS_HOST,
+        port: REDIS_PORT,
+        password: REDIS_PASSWORD,
+        retryStrategy: (times) => Math.min(times * 100, 3000),
+        lazyConnect: true,
+    });
+    redisCmd.on('error', (err) => {
+        // Silently catch Redis offline warnings
+    });
+    redisCmd.connect().then(() => {
+        redisCmd.del('paradise:online_gods').catch(() => {});
+    }).catch(() => {});
+} catch (e) {
+    console.log('[Paradise-WS] Running in direct in-memory mode without Redis command client.');
+}
 
 // Active connection tracking: ws -> god metadata
 const clients = new Map();
@@ -41,6 +43,19 @@ const lastPosRedisWrite = new Map(); // god_id -> timestamp
 
 // In-memory event-driven tracking of drowning citizens (eliminates 1s /api/world polling)
 const activeDrowningWatch = new Map(); // citizen_id -> deadline_at
+
+// Circular buffer / Set of recently seen event_ids for dedup between HTTP POST and Redis pub/sub
+const recentEventIds = new Set();
+function markAndCheckEventDuplicate(eventId) {
+    if (!eventId) return false;
+    if (recentEventIds.has(eventId)) return true;
+    recentEventIds.add(eventId);
+    if (recentEventIds.size > 500) {
+        const first = recentEventIds.values().next().value;
+        recentEventIds.delete(first);
+    }
+    return false;
+}
 
 // Helper to broadcast to all connected WebSocket clients
 function broadcastToAll(payload, excludeWs = null) {
@@ -56,63 +71,138 @@ function broadcastToAll(payload, excludeWs = null) {
     }
 }
 
-// Subscribe to Redis paradise.events channel (fired by Laravel or other workers)
-redisSub.subscribe('paradise.events', (err, count) => {
-    if (err) {
-        console.error('[Paradise-WS] Failed to subscribe to paradise.events:', err);
-    } else {
-        console.log(`[Paradise-WS] Subscribed to paradise.events (${count} channels active)`);
+// Process and dispatch authoritative world events (from HTTP POST bridge or Redis)
+function handleWorldEvent(event) {
+    if (!event || !event.event_type) return;
+
+    if (event.event_id && markAndCheckEventDuplicate(event.event_id)) {
+        return; // Ignore duplicate
     }
-});
 
-redisSub.on('message', (channel, message) => {
-    if (channel === 'paradise.events') {
-        try {
-            const parsed = JSON.parse(message);
-            broadcastToAll(parsed);
+    broadcastToAll(event);
 
-            // In-memory event-driven drowning tracker (eliminates all /api/world polling)
-            if (parsed.event_type === 'citizen.thrown' && parsed.payload?.outcome === 'landed_ocean') {
-                if (parsed.payload.citizen_id && parsed.payload.drowning_deadline_at) {
-                    activeDrowningWatch.set(parsed.payload.citizen_id, parsed.payload.drowning_deadline_at);
-                }
-            } else if (parsed.event_type === 'citizen.drowning' && parsed.payload?.citizen_id) {
-                if (parsed.payload.drowning_deadline_at) {
-                    activeDrowningWatch.set(parsed.payload.citizen_id, parsed.payload.drowning_deadline_at);
-                }
-            } else if (parsed.event_type === 'citizen.rescued' || parsed.event_type === 'citizen.drowned') {
-                if (parsed.payload?.citizen_id) {
-                    activeDrowningWatch.delete(parsed.payload.citizen_id);
-                }
+    // Event-driven drowning tracker
+    const type = event.event_type;
+    const p = event.payload || {};
+
+    if (type === 'citizen.thrown' && p.outcome === 'landed_ocean') {
+        if (p.citizen_id && p.drowning_deadline_at) {
+            activeDrowningWatch.set(p.citizen_id, p.drowning_deadline_at);
+        }
+    } else if ((type === 'citizen.drowning_started' || type === 'citizen.drowning') && (p.citizen_id || event.entity_id)) {
+        const citId = p.citizen_id || event.entity_id;
+        if (p.drowning_deadline_at) {
+            activeDrowningWatch.set(citId, p.drowning_deadline_at);
+        }
+    } else if (type === 'citizen.rescued' || type === 'citizen.drowned') {
+        const citId = p.citizen_id || event.entity_id;
+        if (citId) {
+            activeDrowningWatch.delete(citId);
+        }
+    }
+}
+
+// Create HTTP server for health checks and Laravel HTTP broadcast bridge
+const server = http.createServer((req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+    }
+
+    if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            status: 'ok',
+            clients: clients.size,
+            drowning_watch_count: activeDrowningWatch.size,
+        }));
+        return;
+    }
+
+    if (req.method === 'POST' && (req.url === '/broadcast' || req.url === '/api/broadcast')) {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const event = JSON.parse(body);
+                handleWorldEvent(event);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'ok', event_id: event.event_id }));
+            } catch (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
             }
-        } catch (e) {
-            console.error('[Paradise-WS] Invalid JSON received from Redis:', message);
-        }
+        });
+        return;
     }
+
+    res.writeHead(404);
+    res.end();
 });
 
-// Helper to publish event to Redis
-async function publishWorldEvent(eventType, actorGodId, entityId, payload) {
-    try {
-        let current = await redisCmd.get('paradise:world_version');
-        if (!current || parseInt(current, 10) < 1000) {
-            await redisCmd.set('paradise:world_version', 1000);
+// Attach WebSocketServer to HTTP server
+const wss = new WebSocketServer({ server });
+
+// Subscribe to Redis paradise.events channel (fired by Laravel or other workers if available)
+try {
+    redisSub = new Redis({
+        host: REDIS_HOST,
+        port: REDIS_PORT,
+        password: REDIS_PASSWORD,
+        retryStrategy: (times) => Math.min(times * 100, 3000),
+        lazyConnect: true,
+    });
+    redisSub.on('error', (err) => {
+        // Silently catch Redis subscriber offline warnings
+    });
+    redisSub.connect().then(() => {
+        redisSub.subscribe('paradise.events', (err, count) => {
+            if (!err) {
+                console.log(`[Paradise-WS] Subscribed to paradise.events (${count} channels active)`);
+            }
+        });
+    }).catch(() => {});
+
+    redisSub.on('message', (channel, message) => {
+        if (channel === 'paradise.events') {
+            try {
+                const parsed = JSON.parse(message);
+                handleWorldEvent(parsed);
+            } catch (e) {
+                console.error('[Paradise-WS] Invalid JSON received from Redis:', message);
+            }
         }
-        const version = await redisCmd.incr('paradise:world_version');
-        const event = {
-            event_id: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-            world_version: version,
-            event_type: eventType,
-            actor_god_id: actorGodId || null,
-            entity_id: entityId || null,
-            occurred_at: Date.now(),
-            payload: payload || {},
-        };
-        await redisCmd.publish('paradise.events', JSON.stringify(event));
-        return event;
-    } catch (err) {
-        console.error('[Paradise-WS] publishWorldEvent error:', err.message);
+    });
+} catch (e) {
+    console.log('[Paradise-WS] Running in direct in-memory mode without Redis subscriber.');
+}
+
+// Helper to publish event to Redis if available, and broadcast in-memory immediately
+async function publishWorldEvent(eventType, actorGodId, entityId, payload) {
+    const version = Date.now();
+    const event = {
+        event_id: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+        world_version: version,
+        event_type: eventType,
+        actor_god_id: actorGodId || null,
+        entity_id: entityId || null,
+        occurred_at: Date.now(),
+        payload: payload || {},
+    };
+
+    handleWorldEvent(event);
+
+    if (redisCmd && redisCmd.status === 'ready') {
+        try {
+            await redisCmd.publish('paradise.events', JSON.stringify(event));
+        } catch (err) {}
     }
+    return event;
 }
 
 wss.on('connection', (ws, req) => {
@@ -409,9 +499,12 @@ process.on('SIGTERM', () => {
     }
     disconnectGraceTimers.clear();
     wss.close();
-    redisCmd.disconnect();
-    redisSub.disconnect();
+    server.close();
+    if (redisCmd) redisCmd.disconnect();
+    if (redisSub) redisSub.disconnect();
     process.exit(0);
 });
 
-console.log(`[Paradise-WS] Realtime WebSocket server listening on port ${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Paradise-WS] Realtime WebSocket & HTTP server listening on port ${PORT}`);
+});

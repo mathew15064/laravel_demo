@@ -258,32 +258,48 @@ export class ParadiseWorld {
             let citizen = this.citizens.find((c) => c.id === citData.id);
             if (!citizen) {
                 const island = this.islands.find((i) => i.id === payload.island_id) || this.islands[0];
-                this.spawnCitizen(citData, island);
+                citizen = this.spawnCitizen(citData, island);
+            }
+            if (citizen) {
+                citizen.version = payload.version || citData.version || 1;
+                citizen.createdByGodId = payload.created_by_god_id || citData.created_by_god_id;
             }
             if (payload.island_id) {
                 const isl = this.islands.find((i) => i.id === payload.island_id);
                 if (isl) isl.updateLabel(null, isl.data.population + 1);
             }
             this.ui.hud.setWorldPopulation(this.citizens.length);
-            this.ui.toast.show(payload.message, 'info');
-        });
-
-        // 4b. Citizen grabbed by another God
-        this.realtimeClient.on('citizen.grabbed', (payload) => {
-            const cit = this.citizens.find((c) => c.id === payload.citizen_id);
-            if (cit) {
-                cit.setHoldingGod(payload.god_id, payload.god_name, payload.god_color);
-                cit.group.position.y = 5.5;
-                if (this.currentGod && (this.currentGod.id !== payload.god_id && this.currentGod.god_id !== payload.god_id)) {
-                    this.ui.toast.show(payload.message || `✋ Thần ${payload.god_name} đang nhấc ${cit.name}!`, 'info');
-                }
+            if (payload.message) {
+                this.ui.toast.show(payload.message, 'info');
             }
         });
+
+        // 4b. Citizen grabbed / hold started by another God
+        const handleCitizenGrabbed = (payload) => {
+            const cit = this.citizens.find((c) => c.id === payload.citizen_id);
+            if (cit) {
+                if (payload.version && cit.version && payload.version < cit.version) return;
+                if (payload.version) cit.version = payload.version;
+
+                cit.setHoldingGod(payload.god_id || payload.held_by_god_id, payload.god_name || payload.actor_god_name, payload.god_color);
+                cit.group.position.y = 5.5;
+                const actorId = payload.actor_god_id || payload.god_id;
+                if (this.currentGod && (this.currentGod.id !== actorId && this.currentGod.god_id !== actorId)) {
+                    this.ui.toast.show(payload.message || `✋ Thần ${payload.god_name || 'Vô Danh'} đang nhấc ${cit.name}!`, 'info');
+                }
+            }
+        };
+        this.realtimeClient.on('citizen.grabbed', handleCitizenGrabbed);
+        this.realtimeClient.on('citizen.hold_started', handleCitizenGrabbed);
 
         // 4c. Citizen moved while held
         this.realtimeClient.on('citizen.moved', (payload) => {
             const cit = this.citizens.find((c) => c.id === payload.citizen_id);
             if (cit && payload.position) {
+                // Ignore if currently being dragged locally
+                if (this.throwSystem && this.throwSystem.draggedCitizen && this.throwSystem.draggedCitizen.id === cit.id) {
+                    return;
+                }
                 cit.status = 'held';
                 cit.setTargetPosition(payload.position);
             }
@@ -293,6 +309,9 @@ export class ParadiseWorld {
         this.realtimeClient.on('citizen.released', (payload) => {
             const cit = this.citizens.find((c) => c.id === payload.citizen_id);
             if (cit) {
+                if (payload.version && cit.version && payload.version < cit.version) return;
+                if (payload.version) cit.version = payload.version;
+
                 cit.clearHoldingGod();
                 cit.status = 'alive';
                 if (payload.position) {
@@ -305,6 +324,11 @@ export class ParadiseWorld {
         this.realtimeClient.on('citizen.thrown', (payload) => {
             const cit = this.citizens.find((c) => c.id === payload.citizen_id);
             if (!cit) return;
+
+            if (payload.version && cit.version && payload.version < cit.version) return;
+            if (payload.version) cit.version = payload.version;
+
+            cit.clearHoldingGod();
 
             // Launch synchronized ballistic arc
             if (payload.start_position && payload.velocity) {
@@ -321,6 +345,9 @@ export class ParadiseWorld {
                 cit._flightTimeout = setTimeout(() => {
                     cit._flightTimeout = null;
                     if (cit.status !== 'alive') {
+                        cit.isThrown = false;
+                        cit.status = 'drowning';
+                        cit.state = 'drowning';
                         this.drowningSystem.startDrowning(
                             cit,
                             payload.drowning_deadline_at,
@@ -330,15 +357,48 @@ export class ParadiseWorld {
                 }, (payload.flight_time || 1.0) * 1000);
             }
 
-            this.ui.toast.show(payload.message, 'info');
+            if (payload.message) {
+                this.ui.toast.show(payload.message, 'info');
+            }
         });
+
+        // 5b. Citizen drowning started
+        const handleDrowningStarted = (payload) => {
+            const cit = this.citizens.find((c) => c.id === (payload.citizen_id || payload.id));
+            if (!cit) return;
+
+            if (payload.version && cit.version && payload.version < cit.version) return;
+            if (payload.version) cit.version = payload.version;
+
+            if (cit._flightTimeout) {
+                clearTimeout(cit._flightTimeout);
+                cit._flightTimeout = null;
+            }
+            cit.isThrown = false;
+            cit.status = 'drowning';
+            cit.state = 'drowning';
+            if (payload.position) {
+                cit.group.position.set(payload.position.x, 0.2, payload.position.z);
+            }
+            const drownVersion = payload.drowning_version || 1;
+            this.drowningSystem.startDrowning(cit, payload.drowning_deadline_at, drownVersion);
+            if (payload.message) {
+                this.ui.toast.show(payload.message, 'warning');
+            }
+        };
+        this.realtimeClient.on('citizen.drowning_started', handleDrowningStarted);
+        this.realtimeClient.on('citizen.drowning', handleDrowningStarted);
 
         // 6. Citizen rescued
         this.realtimeClient.on('citizen.rescued', (payload) => {
             const citizen = this.citizens.find((c) => c.id === payload.citizen_id);
-            const saviorAvatar = this.godManager.getAvatar(payload.savior_id);
+            const saviorId = payload.savior_id || payload.actor_god_id;
+            const saviorAvatar = saviorId ? this.godManager.getAvatar(saviorId) : null;
 
             if (citizen) {
+                if (payload.version && citizen.version && payload.version < citizen.version) return;
+                if (payload.version) citizen.version = payload.version;
+
                 if (citizen._flightTimeout) {
                     clearTimeout(citizen._flightTimeout);
                     citizen._flightTimeout = null;
@@ -362,7 +422,7 @@ export class ParadiseWorld {
                 }
             }
 
-            this.ui.toast.show(payload.message || `✨ Vị thần đã cứu vớt ${payload.citizen_name}!`, 'success');
+            this.ui.toast.show(payload.message || `✨ Vị thần đã cứu vớt ${payload.citizen_name || 'cư dân'}!`, 'success');
         });
 
         // 7. Citizen drowned
@@ -370,7 +430,8 @@ export class ParadiseWorld {
             this.drowningSystem.confirmDeath(payload.citizen_id);
             const idx = this.citizens.findIndex((c) => c.id === payload.citizen_id);
             if (idx !== -1) {
-                this.citizens.splice(idx, 1);
+                const [deadCitizen] = this.citizens.splice(idx, 1);
+                deadCitizen?.dispose();
             }
             this.ui.hud.setWorldPopulation(this.citizens.length);
             this.ui.toast.show(payload.message || `🌊 Cư dân đã chìm xuống đại dương.`, 'warning');
@@ -380,7 +441,25 @@ export class ParadiseWorld {
         this.realtimeClient.on('citizen.renamed', (payload) => {
             const cit = this.citizens.find((c) => c.id === payload.citizen_id);
             if (cit) {
+                if (payload.version && cit.version && payload.version < cit.version) return;
+                if (payload.version) cit.version = payload.version;
                 cit.updateLabel(payload.name);
+            }
+        });
+
+        // 8b. Citizen moved island
+        this.realtimeClient.on('citizen.moved_island', (payload) => {
+            const cit = this.citizens.find((c) => c.id === payload.citizen_id);
+            if (cit) {
+                if (payload.version && cit.version && payload.version < cit.version) return;
+                if (payload.version) cit.version = payload.version;
+                if (payload.island_id) {
+                    const island = this.islands.find((i) => i.id === payload.island_id);
+                    if (island) cit.setIsland(island);
+                }
+                if (payload.position) {
+                    cit.group.position.set(payload.position.x, 2.0, payload.position.z);
+                }
             }
         });
 
@@ -446,16 +525,33 @@ export class ParadiseWorld {
                     const island = this.islands.find((i) => i.id === citData.island_id) || this.islands[0];
                     existing = this.spawnCitizen(citData, island);
                 } else {
+                    existing.name = citData.name;
+                    existing.version = citData.version || existing.version || 1;
                     existing.status = citData.status;
+
                     if (citData.status === 'held') {
                         existing.setHoldingGod(citData.held_by_god_id, citData.held_by_god_name, citData.held_by_god_color);
+                        if (citData.position) {
+                            existing.targetPosition.set(citData.position.x, 5.5, citData.position.z);
+                        }
                     } else {
                         existing.clearHoldingGod();
                     }
+
                     if (citData.status === 'drowning' && citData.drowning_deadline_at) {
+                        if (citData.position) {
+                            existing.group.position.set(citData.position.x, 0.2, citData.position.z);
+                        }
                         this.drowningSystem.startDrowning(existing, citData.drowning_deadline_at, citData.drowning_version || 1);
                     } else if (citData.status === 'alive') {
                         this.drowningSystem.clearDrowning(existing.id);
+                        if (existing.group.position.y < 1.0 && citData.position) {
+                            existing.group.position.set(citData.position.x, 2.0, citData.position.z);
+                        }
+                        if (citData.island_id) {
+                            const island = this.islands.find((i) => i.id === citData.island_id);
+                            if (island) existing.setIsland(island);
+                        }
                     }
                 }
             }

@@ -82,9 +82,12 @@ class CitizenApiController extends Controller
 
         WorldEventBroadcaster::broadcast('citizen.created', $god->id, $citizen->id, [
             'citizen' => $citizenData,
+            'actor_god_id' => $god->id,
+            'created_by_god_id' => $citizen->created_by_god_id,
             'island_id' => $island->id,
             'island_name' => $island->name,
             'world_population' => $worldPop,
+            'version' => $citizen->version ?? 1,
             'message' => "✨ {$god->name} đã ban sự sống cho {$citizen->name} trên {$island->name}.",
         ]);
 
@@ -178,6 +181,10 @@ class CitizenApiController extends Controller
             WorldEventBroadcaster::broadcast('citizen.grabbed', $callerGod->id, $c->id, [
                 'citizen_id' => $c->id,
                 'citizen_name' => $c->name,
+                'actor_god_id' => $callerGod->id,
+                'actor_god_name' => $callerGod->name,
+                'created_by_god_id' => $c->created_by_god_id,
+                'held_by_god_id' => $callerGod->id,
                 'god_id' => $callerGod->id,
                 'god_name' => $callerGod->name,
                 'god_color' => $callerGod->god_color,
@@ -237,6 +244,10 @@ class CitizenApiController extends Controller
 
             WorldEventBroadcaster::broadcast('citizen.released', $callerGod?->id, $c->id, [
                 'citizen_id' => $c->id,
+                'citizen_name' => $c->name,
+                'actor_god_id' => $callerGod?->id,
+                'actor_god_name' => $callerGod?->name,
+                'created_by_god_id' => $c->created_by_god_id,
                 'position' => [
                     'x' => $c->position_x,
                     'y' => $c->position_y,
@@ -244,6 +255,7 @@ class CitizenApiController extends Controller
                 ],
                 'island_id' => $c->island_id,
                 'version' => $c->version,
+                'message' => "Cư dân {$c->name} đã được đặt xuống bình an.",
             ]);
 
             return response()->json([
@@ -276,9 +288,24 @@ class CitizenApiController extends Controller
             'position_z' => $validated['position_z'] ?? $targetIsland->world_z,
             'drowning_started_at' => null,
             'drowning_deadline_at' => null,
+            'version' => ($citizen->version ?? 1) + 1,
         ]);
 
         $oldIsland = $oldIslandId ? Island::find($oldIslandId) : null;
+
+        WorldEventBroadcaster::broadcast('citizen.moved_island', null, $citizen->id, [
+            'citizen_id' => $citizen->id,
+            'citizen_name' => $citizen->name,
+            'island_id' => $targetIsland->id,
+            'island_name' => $targetIsland->name,
+            'position' => [
+                'x' => (float) $citizen->position_x,
+                'y' => 0.0,
+                'z' => (float) $citizen->position_z,
+            ],
+            'version' => $citizen->version,
+            'message' => "{$citizen->name} đã chuyển sang {$targetIsland->name}.",
+        ]);
 
         return response()->json([
             'status' => 'ok',
@@ -302,6 +329,26 @@ class CitizenApiController extends Controller
             'status' => 'drowning',
             'drowning_started_at' => $nowMs,
             'drowning_deadline_at' => $nowMs + $timeoutMs,
+            'drowning_version' => ($citizen->drowning_version ?? 0) + 1,
+            'version' => ($citizen->version ?? 1) + 1,
+        ]);
+
+        WorldEventBroadcaster::broadcast('citizen.drowning_started', null, $citizen->id, [
+            'citizen_id' => $citizen->id,
+            'citizen_name' => $citizen->name,
+            'actor_god_id' => null,
+            'created_by_god_id' => $citizen->created_by_god_id,
+            'status' => 'drowning',
+            'drowning_started_at' => $nowMs,
+            'drowning_deadline_at' => $nowMs + $timeoutMs,
+            'drowning_version' => $citizen->drowning_version,
+            'position' => [
+                'x' => (float) $citizen->position_x,
+                'y' => (float) $citizen->position_y,
+                'z' => (float) $citizen->position_z,
+            ],
+            'version' => $citizen->version,
+            'message' => "🌊 Ối! {$citizen->name} rơi xuống biển và đang chết đuối! Cần cứu trợ gấp!",
         ]);
 
         return response()->json([
@@ -417,6 +464,8 @@ class CitizenApiController extends Controller
             'citizen_name' => $citizen->name,
             'actor_god_id' => $callerGod->id,
             'actor_god_name' => $callerGod->name,
+            'created_by_god_id' => $citizen->created_by_god_id,
+            'version' => $citizen->version,
             'start_position' => ['x' => $x0, 'y' => $y0, 'z' => $z0],
             'velocity' => ['x' => $vx, 'y' => $vy, 'z' => $vz],
             'flight_time' => $flightTime,
@@ -546,14 +595,18 @@ class CitizenApiController extends Controller
             WorldEventBroadcaster::broadcast('citizen.rescued', $callerGod->id, $c->id, [
                 'citizen_id' => $c->id,
                 'citizen_name' => $c->name,
+                'actor_god_id' => $callerGod->id,
+                'actor_god_name' => $callerGod->name,
                 'savior_id' => $callerGod->id,
                 'savior_name' => $callerGod->name,
                 'savior_color' => $callerGod->god_color,
+                'created_by_god_id' => $c->created_by_god_id,
                 'owner_id' => $c->created_by_god_id,
                 'owner_name' => $ownerGod?->name,
                 'target_island_id' => $targetIsland->id,
                 'target_island_name' => $targetIsland->name,
                 'safe_position' => ['x' => $safeX, 'y' => 0.0, 'z' => $safeZ],
+                'version' => $c->version,
                 'message' => "⚡ Vị thần {$callerGod->name} đã phóng tia thần lực cứu sống {$c->name} thoát khỏi biển sâu đưa về {$targetIsland->name}!",
             ]);
 

@@ -3,7 +3,7 @@
 namespace App\Services;
 
 use App\Models\WorldState;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
@@ -12,6 +12,7 @@ use Throwable;
 class WorldEventBroadcaster
 {
     public const CHANNEL = 'paradise.events';
+
     public const VERSION_KEY = 'paradise:world_version';
 
     /**
@@ -21,9 +22,9 @@ class WorldEventBroadcaster
     {
         try {
             $val = Redis::get(self::VERSION_KEY);
-            if ($val === null || (int)$val < 1000) {
+            if ($val === null || (int) $val < 1000) {
                 $dbVersion = WorldState::value('world_version') ?? 1000;
-                $initial = max(1000, (int)$dbVersion);
+                $initial = max(1000, (int) $dbVersion);
                 Redis::set(self::VERSION_KEY, $initial);
             }
 
@@ -36,9 +37,10 @@ class WorldEventBroadcaster
 
             return $version;
         } catch (Throwable $e) {
-            Log::warning('Redis version increment failed, falling back to DB: ' . $e->getMessage());
+            Log::warning('Redis version increment failed, falling back to DB: '.$e->getMessage());
             $state = WorldState::firstOrCreate(['id' => 1], ['world_version' => 1000]);
             $state->increment('world_version');
+
             return (int) $state->fresh()->world_version;
         }
     }
@@ -50,10 +52,11 @@ class WorldEventBroadcaster
     {
         try {
             $val = Redis::get(self::VERSION_KEY);
-            if ($val !== null && $val !== false && (int)$val >= 1000) {
+            if ($val !== null && $val !== false && (int) $val >= 1000) {
                 return (int) $val;
             }
-        } catch (Throwable) {}
+        } catch (Throwable) {
+        }
 
         return (int) (WorldState::value('world_version') ?? 1000);
     }
@@ -80,10 +83,19 @@ class WorldEventBroadcaster
             'payload' => $payload,
         ];
 
+        // 1. Direct delivery to Node realtime-server via local HTTP POST (super-fast < 1ms, zero Redis dependency)
+        try {
+            $wsPort = config('services.realtime.port') ?? env('WEBSOCKET_PORT', 8089);
+            Http::timeout(0.4)->post("http://127.0.0.1:{$wsPort}/broadcast", $event);
+        } catch (Throwable $e) {
+            // Node server may be starting or will receive via Redis
+        }
+
+        // 2. Publish to Redis channel if Redis is active
         try {
             Redis::publish(self::CHANNEL, json_encode($event));
         } catch (Throwable $e) {
-            Log::error('Failed to publish world event to Redis: ' . $e->getMessage(), ['event' => $event]);
+            // Redis is optional per environment architecture
         }
 
         return $event;

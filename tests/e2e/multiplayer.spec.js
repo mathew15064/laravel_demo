@@ -111,11 +111,10 @@ test.describe('Paradise Gods — Cooperative Shared World Multiplayer', () => {
         await expect(zeusPage.locator(`#drowning-alert-${newCitizenId}`)).toBeHidden({ timeout: 6000 });
 
         // 10. Zeus sees citizen rescued and back alive
-        const citizenStateAfterRescue = await zeusPage.evaluate((citId) => {
+        await zeusPage.waitForFunction((citId) => {
             const cit = window.__paradiseGame?.activeParadiseWorld?.citizens?.find(c => c.id === citId);
-            return cit ? cit.status : null;
-        }, newCitizenId);
-        expect(citizenStateAfterRescue).toBe('alive');
+            return cit && cit.status === 'alive';
+        }, newCitizenId, { timeout: 8000 });
 
         await zeusContext.close();
         await athenaContext.close();

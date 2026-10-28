@@ -568,7 +568,7 @@ export class ParadiseWorld {
 
     renderLoop() {
         if (!this.isRunning) return;
-        requestAnimationFrame(this.animate);
+        this.rafId = requestAnimationFrame(this.animate);
 
         const delta = Math.min(this.clock.getDelta(), 0.1);
         const elapsed = this.clock.getElapsedTime();
@@ -636,6 +636,10 @@ export class ParadiseWorld {
 
     dispose() {
         this.isRunning = false;
+        if (this.rafId) {
+            cancelAnimationFrame(this.rafId);
+            this.rafId = null;
+        }
         window.removeEventListener('resize', this.onResize);
 
         this.realtimeClient.disconnect();

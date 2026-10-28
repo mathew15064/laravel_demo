@@ -68,7 +68,7 @@ class God extends Model
     public function getStatsAttribute(): array
     {
         $created = $this->citizens()->count();
-        $alive = $this->citizens()->whereIn('status', ['alive', 'drowning', 'held'])->count();
+        $alive = $this->citizens()->living()->count();
         $drowned = $this->citizens()->where('status', 'dead')->where('death_reason', 'drowned')->count();
         $rescued = $this->rescued_count;
         $governedIslands = Island::where('governed_by_god_id', $this->id)->count();

@@ -67,12 +67,12 @@ class WorldApiController extends Controller
             }
 
             // World population = alive + drowning + held citizens
-            $worldPopulation = Citizen::whereIn('status', ['alive', 'drowning', 'held'])->count();
+            $worldPopulation = Citizen::living()->count();
 
             // Fetch islands with current population
             $islands = Island::withCount([
                 'citizens as population' => function ($q) {
-                    $q->whereIn('status', ['alive', 'drowning', 'held']);
+                    $q->living();
                 },
             ])->get()->map(function (Island $isl) {
                 return [
@@ -91,7 +91,7 @@ class WorldApiController extends Controller
             // Fetch active citizens (alive, drowning, or held)
             $nowMs = (int) round(microtime(true) * 1000);
             $citizens = Citizen::with(['god:id,uuid,name,god_color', 'heldByGod:id,name,god_color', 'island:id,name'])
-                ->whereIn('status', ['alive', 'drowning', 'held'])
+                ->living()
                 ->get()
                 ->map(function (Citizen $c) use ($nowMs) {
                     $remainingDrowningSec = 0;

@@ -62,7 +62,7 @@ class Island extends Model
     public function getPopulationAttribute(): int
     {
         return $this->citizens()
-            ->whereIn('status', ['alive', 'drowning', 'held'])
+            ->living()
             ->count();
     }
 }

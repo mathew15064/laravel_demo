@@ -32,6 +32,28 @@ class Citizen extends Model
         '#14b8a6', // teal
     ];
 
+    /**
+     * Authoritative definition of living statuses: alive, held, drowning.
+     * Citizens in these statuses are not dead and contribute to alive counts.
+     */
+    public const LIVING_STATUSES = ['alive', 'held', 'drowning'];
+
+    /**
+     * Scope query to citizens that are still alive, held, or drowning.
+     */
+    public function scopeLiving($query)
+    {
+        return $query->whereIn('status', self::LIVING_STATUSES);
+    }
+
+    /**
+     * Check if this citizen is currently alive, held, or drowning.
+     */
+    public function isLiving(): bool
+    {
+        return in_array($this->status, self::LIVING_STATUSES, true);
+    }
+
     protected $fillable = [
         'island_id',
         'created_by_god_id',

@@ -195,6 +195,7 @@ export class ThrowSystem {
             // Gentle placement / release
             citizen.status = 'alive';
             citizen.heldByGodId = null;
+            citizen.group.position.y = 2.0; // Reset height to island ground level
 
             if (this.apiClient) {
                 await this.apiClient.request(`/api/citizens/${citizen.id}/release`, {

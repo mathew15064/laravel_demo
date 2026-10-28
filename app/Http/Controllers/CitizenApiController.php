@@ -6,6 +6,7 @@ use App\Models\Citizen;
 use App\Models\God;
 use App\Models\Island;
 use App\Models\Rescue;
+use App\Services\CitizenLifecycleService;
 use App\Services\WorldEventBroadcaster;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -13,6 +14,10 @@ use Illuminate\Support\Facades\DB;
 
 class CitizenApiController extends Controller
 {
+    public function __construct(
+        public CitizenLifecycleService $lifecycleService
+    ) {}
+
     /**
      * Create a new citizen on an island.
      */
@@ -73,7 +78,7 @@ class CitizenApiController extends Controller
             ],
         ];
 
-        $worldPop = Citizen::whereIn('status', ['alive', 'drowning', 'held'])->count();
+        $worldPop = Citizen::living()->count();
 
         WorldEventBroadcaster::broadcast('citizen.created', $god->id, $citizen->id, [
             'citizen' => $citizenData,
@@ -280,7 +285,7 @@ class CitizenApiController extends Controller
             'citizen' => $citizen->fresh()->load('island:id,name'),
             'old_island_population' => $oldIsland ? $oldIsland->population : null,
             'new_island_population' => $targetIsland->population,
-            'world_population' => Citizen::whereIn('status', ['alive', 'drowning', 'held'])->count(),
+            'world_population' => Citizen::living()->count(),
             'message' => "{$citizen->name} đã chuyển sang {$targetIsland->name}.",
         ]);
     }
@@ -491,28 +496,11 @@ class CitizenApiController extends Controller
 
             // Check if deadline expired in database
             if ($c->drowning_deadline_at && $nowMs > $c->drowning_deadline_at) {
-                $c->update([
-                    'status' => 'dead',
-                    'death_reason' => 'drowned',
-                    'drowning_started_at' => null,
-                    'drowning_deadline_at' => null,
-                ]);
-
-                if ($c->created_by_god_id) {
-                    God::where('id', $c->created_by_god_id)->decrement('citizens_alive_count');
-                    God::where('id', $c->created_by_god_id)->increment('citizens_drowned_count');
-                }
-
-                WorldEventBroadcaster::broadcast('citizen.drowned', null, $c->id, [
-                    'citizen_id' => $c->id,
-                    'citizen_name' => $c->name,
-                    'owner_id' => $c->created_by_god_id,
-                    'reason' => 'timeout',
-                    'message' => "🌊 {$c->name} đã chìm sâu dưới đáy đại dương.",
-                ]);
+                $finalized = $this->lifecycleService->finalizeDrowning($c->id, 'timeout');
 
                 return response()->json([
                     'status' => 'already_dead',
+                    'citizen' => $finalized['citizen'] ?? $c,
                     'message' => "Thời gian cứu hộ đã hết, {$c->name} đã chìm xuống đáy biển.",
                 ], 410);
             }
@@ -592,56 +580,56 @@ class CitizenApiController extends Controller
     {
         $nowMs = (int) round(microtime(true) * 1000);
 
-        return DB::transaction(function () use ($citizen, $nowMs) {
-            /** @var Citizen $c */
-            $c = Citizen::lockForUpdate()->find($citizen->id);
+        /** @var Citizen|null $c */
+        $c = Citizen::find($citizen->id);
 
-            if (! $c) {
-                return response()->json(['status' => 'error', 'message' => 'Cư dân không tồn tại'], 404);
-            }
+        if (! $c) {
+            return response()->json(['status' => 'error', 'message' => 'Cư dân không tồn tại'], 404);
+        }
 
-            if ($c->status !== 'drowning') {
-                return response()->json([
-                    'status' => 'not_drowning',
-                    'citizen' => $c,
-                    'message' => 'Cư dân hiện không ở trạng thái chết đuối.',
-                ]);
-            }
-
-            // Only drown if deadline has actually passed (or force called with 150ms latency tolerance)
-            if ($c->drowning_deadline_at && $nowMs < ($c->drowning_deadline_at - 150)) {
-                return response()->json([
-                    'status' => 'still_drowning',
-                    'remaining_ms' => $c->drowning_deadline_at - $nowMs,
-                    'message' => 'Thời gian chết đuối chưa hết.',
-                ], 422);
-            }
-
-            $c->update([
-                'status' => 'dead',
-                'death_reason' => 'drowned',
-                'drowning_started_at' => null,
-                'drowning_deadline_at' => null,
-            ]);
-
-            if ($c->created_by_god_id) {
-                God::where('id', $c->created_by_god_id)->decrement('citizens_alive_count');
-                God::where('id', $c->created_by_god_id)->increment('citizens_drowned_count');
-            }
-
-            WorldEventBroadcaster::broadcast('citizen.drowned', null, $c->id, [
-                'citizen_id' => $c->id,
-                'citizen_name' => $c->name,
-                'owner_id' => $c->created_by_god_id,
-                'message' => "🌊 {$c->name} đã chìm vào đại dương vô tận.",
-            ]);
-
+        // Idempotent safe handling if already dead
+        if ($c->status === 'dead') {
             return response()->json([
-                'status' => 'ok',
-                'citizen' => $c->fresh(),
-                'world_population' => Citizen::whereIn('status', ['alive', 'drowning', 'held'])->count(),
-                'message' => "{$c->name} đã chìm vào giấc ngủ vĩnh hằng dưới đáy biển.",
-            ]);
-        });
+                'status' => 'already_dead',
+                'citizen' => $c,
+                'world_population' => Citizen::living()->count(),
+                'message' => "Cư dân {$c->name} đã qua đời trước đó.",
+            ], 200);
+        }
+
+        if ($c->status !== 'drowning') {
+            return response()->json([
+                'status' => 'not_drowning',
+                'citizen' => $c,
+                'message' => 'Cư dân hiện không ở trạng thái chết đuối.',
+            ], 422);
+        }
+
+        // Only drown if deadline has actually passed (or force called with 150ms latency tolerance)
+        if ($c->drowning_deadline_at && $nowMs < ($c->drowning_deadline_at - 150)) {
+            return response()->json([
+                'status' => 'still_drowning',
+                'remaining_ms' => $c->drowning_deadline_at - $nowMs,
+                'message' => 'Thời gian chết đuối chưa hết.',
+            ], 422);
+        }
+
+        $result = $this->lifecycleService->finalizeDrowning($c->id, 'timeout');
+
+        if (! $result['success']) {
+            return response()->json([
+                'status' => $result['status'],
+                'citizen' => $result['citizen'] ?? $c,
+                'world_population' => Citizen::living()->count(),
+                'message' => 'Cư dân đã được xử lý trạng thái trước đó.',
+            ], 200);
+        }
+
+        return response()->json([
+            'status' => 'ok',
+            'citizen' => $result['citizen'],
+            'world_population' => Citizen::living()->count(),
+            'message' => "{$result['citizen']->name} đã chìm vào giấc ngủ vĩnh hằng dưới đáy biển.",
+        ]);
     }
 }

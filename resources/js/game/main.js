@@ -150,6 +150,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             activeVolcanoWorld = null;
         }
 
+        if (activeParadiseWorld) {
+            activeParadiseWorld.dispose();
+            activeParadiseWorld = null;
+        }
+
         hudContainer.classList.remove('hidden');
 
         activeParadiseWorld = new ParadiseWorld(canvasContainer, apiClient, uiManager, timeoutSetting);

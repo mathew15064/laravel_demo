@@ -307,6 +307,11 @@ export class Citizen {
     updateAmbientWalking(delta, elapsedTime) {
         if (!this.currentIsland) return;
 
+        // Ground-level gravity snap: smoothly bring elevated citizens back to island surface (fixes floating bug)
+        if (this.group.position.y > 2.0) {
+            this.group.position.y = Math.max(2.0, this.group.position.y - 12.0 * delta);
+        }
+
         this.walkTimer -= delta;
         if (this.walkTimer <= 0) {
             if (this.state === 'idle') {

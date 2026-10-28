@@ -256,7 +256,7 @@ class WorldSeeder extends Seeder
         foreach (God::all() as $g) {
             $g->update([
                 'citizens_created_count' => $g->citizens()->count(),
-                'citizens_alive_count' => $g->citizens()->where('status', 'alive')->count(),
+                'citizens_alive_count' => $g->citizens()->living()->count(),
                 'citizens_drowned_count' => $g->citizens()->where('status', 'dead')->where('death_reason', 'drowned')->count(),
             ]);
         }

@@ -13,6 +13,7 @@ export class RealtimeClient {
         this.toast = toast;
 
         this.socket = null;
+        this.connectionGeneration = 0;
         this.reconnectTimer = null;
         this.reconnectAttempts = 0;
         this.isExplicitlyClosed = false;
@@ -82,6 +83,32 @@ export class RealtimeClient {
         if (god) this.currentGod = god;
         this.isExplicitlyClosed = false;
 
+        // Cancel any pending reconnect timer to prevent duplicate sockets
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+
+        // If current socket is already connected or connecting, do not spawn another
+        if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+            if (this.socket.readyState === WebSocket.OPEN && this.currentGod) {
+                this.sendJoin(this.currentGod);
+            }
+            return;
+        }
+
+        // Clean up previous dead or closing socket and strip handlers to avoid ghost onclose calls
+        if (this.socket) {
+            this.socket.onopen = null;
+            this.socket.onmessage = null;
+            this.socket.onclose = null;
+            this.socket.onerror = null;
+            try { this.socket.close(); } catch (e) {}
+            this.socket = null;
+        }
+
+        const currentGen = ++this.connectionGeneration;
+
         try {
             this.socket = new WebSocket(this.wsUrl);
         } catch (e) {
@@ -91,6 +118,7 @@ export class RealtimeClient {
         }
 
         this.socket.onopen = () => {
+            if (currentGen !== this.connectionGeneration) return;
             console.log('[RealtimeClient] Connected to Paradise Realtime Server at', this.wsUrl);
             const wasDisconnected = this.state === 'RECONNECTING' || this.state === 'DEGRADED';
             const duration = this.disconnectStartedAt ? Date.now() - this.disconnectStartedAt : 0;
@@ -119,6 +147,7 @@ export class RealtimeClient {
         };
 
         this.socket.onmessage = (event) => {
+            if (currentGen !== this.connectionGeneration) return;
             try {
                 const data = JSON.parse(event.data);
                 this.handleIncomingEvent(data);
@@ -128,12 +157,14 @@ export class RealtimeClient {
         };
 
         this.socket.onclose = () => {
+            if (currentGen !== this.connectionGeneration) return;
             if (!this.isExplicitlyClosed) {
                 this.handleDisconnect();
             }
         };
 
         this.socket.onerror = (err) => {
+            if (currentGen !== this.connectionGeneration) return;
             console.warn('[RealtimeClient] Socket error:', err.message || 'error');
         };
     }
@@ -335,12 +366,21 @@ export class RealtimeClient {
 
     disconnect() {
         this.isExplicitlyClosed = true;
+        this.connectionGeneration++;
         this.clearDisconnectTimers();
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+        }
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
         if (this.socket) {
+            this.socket.onopen = null;
+            this.socket.onmessage = null;
+            this.socket.onclose = null;
+            this.socket.onerror = null;
             this.socket.close();
             this.socket = null;
         }

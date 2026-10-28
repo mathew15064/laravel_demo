@@ -1,5 +1,23 @@
 import * as THREE from 'three';
 
+// Shared geometries and materials across all islands to minimize draw calls and GPU allocations
+const SHARED_TRUNK_GEO = new THREE.CylinderGeometry(0.12, 0.22, 2.8, 6);
+const SHARED_LEAF_GEO = new THREE.ConeGeometry(0.7, 1.8, 4);
+const SHARED_HOUSE_WALL_GEO = new THREE.BoxGeometry(1.6, 1.2, 1.4);
+const SHARED_HOUSE_ROOF_GEO = new THREE.ConeGeometry(1.4, 1.0, 4);
+const SHARED_ROCK_GEO = new THREE.DodecahedronGeometry(0.8, 0);
+const SHARED_DOCK_GEO = new THREE.BoxGeometry(1.8, 0.18, 4.2);
+
+const SHARED_TRUNK_MAT = new THREE.MeshLambertMaterial({ color: 0x854d0e, flatShading: true });
+const SHARED_LEAF_MAT = new THREE.MeshLambertMaterial({ color: 0x15803d, flatShading: true });
+const SHARED_HOUSE_WALL_MAT = new THREE.MeshLambertMaterial({ color: 0xfef08a, flatShading: true });
+const SHARED_HOUSE_ROOF_MAT = new THREE.MeshLambertMaterial({ color: 0xe11d48, flatShading: true });
+const SHARED_ROCK_MAT = new THREE.MeshLambertMaterial({ color: 0x64748b, flatShading: true });
+const SHARED_DOCK_MAT = new THREE.MeshLambertMaterial({ color: 0x78350f, flatShading: true });
+const SHARED_SAND_MAT = new THREE.MeshLambertMaterial({ color: 0xf5d09b, flatShading: true });
+
+const _dummy = new THREE.Object3D();
+
 /**
  * Paradise Gods - Procedural Island
  * Creates stylized low-poly island with sand, grass terrain, palm trees, houses, docks,
@@ -32,14 +50,8 @@ export class Island {
     buildTerrain() {
         // 1. Sand Beach Base
         const sandGeo = new THREE.CylinderGeometry(this.radius, this.radius * 1.25, 2.2, 18);
-        const sandMat = new THREE.MeshStandardMaterial({
-            color: 0xf5d09b,
-            roughness: 0.85,
-            flatShading: true,
-        });
-        const sandMesh = new THREE.Mesh(sandGeo, sandMat);
+        const sandMesh = new THREE.Mesh(sandGeo, SHARED_SAND_MAT);
         sandMesh.position.y = 0.4;
-        sandMesh.castShadow = true;
         sandMesh.receiveShadow = true;
         sandMesh.userData = { isIsland: true, islandId: this.id };
         this.group.add(sandMesh);
@@ -49,9 +61,8 @@ export class Island {
         const grassHeight = 1.4;
         const grassGeo = new THREE.CylinderGeometry(grassRadius * 0.95, grassRadius, grassHeight, 18);
         const grassColor = this.type === 'forest' ? 0x22c55e : (this.type === 'capital' ? 0x16a34a : 0x4ade80);
-        const grassMat = new THREE.MeshStandardMaterial({
+        const grassMat = new THREE.MeshLambertMaterial({
             color: grassColor,
-            roughness: 0.75,
             flatShading: true,
         });
         const grassMesh = new THREE.Mesh(grassGeo, grassMat);
@@ -66,104 +77,107 @@ export class Island {
         const hillGeo = new THREE.ConeGeometry(hillRadius, 1.8, 12);
         const hillMesh = new THREE.Mesh(hillGeo, grassMat);
         hillMesh.position.set(0.5, 2.6, -0.5);
-        hillMesh.castShadow = true;
         this.group.add(hillMesh);
     }
 
     buildDecorations() {
         const rand = (min, max) => min + Math.random() * (max - min);
 
-        // Palm Trees (3 to 6 per island)
+        // 1. Instanced Palm Trees (Trunks & Leaves grouped in 2 draw calls)
         const palmCount = Math.floor(rand(3, 6));
+        const trunkInstanced = new THREE.InstancedMesh(SHARED_TRUNK_GEO, SHARED_TRUNK_MAT, palmCount);
+        trunkInstanced.castShadow = true;
+        const leavesInstanced = new THREE.InstancedMesh(SHARED_LEAF_GEO, SHARED_LEAF_MAT, palmCount * 5);
+
+        let leafIdx = 0;
         for (let i = 0; i < palmCount; i++) {
             const angle = (i / palmCount) * Math.PI * 2 + rand(-0.3, 0.3);
             const dist = rand(this.radius * 0.35, this.radius * 0.75);
-            this.createPalmTree(Math.cos(angle) * dist, 2.0, Math.sin(angle) * dist);
-        }
+            const px = Math.cos(angle) * dist;
+            const pz = Math.sin(angle) * dist;
+            const py = 2.0;
 
-        // Low-Poly Houses / Cottages
+            const tiltZ = (Math.random() - 0.5) * 0.25;
+            const tiltX = (Math.random() - 0.5) * 0.25;
+
+            _dummy.position.set(px, py + 1.4, pz);
+            _dummy.rotation.set(tiltX, 0, tiltZ);
+            _dummy.scale.set(1, 1, 1);
+            _dummy.updateMatrix();
+            trunkInstanced.setMatrixAt(i, _dummy.matrix);
+
+            // 5 palm fronds per tree
+            for (let j = 0; j < 5; j++) {
+                const leafAngle = (j / 5) * Math.PI * 2;
+                _dummy.position.set(
+                    px + Math.cos(leafAngle) * 0.6,
+                    py + 2.8,
+                    pz + Math.sin(leafAngle) * 0.6
+                );
+                _dummy.rotation.set(Math.sin(leafAngle) * 1.1, 0, -Math.cos(leafAngle) * 1.1);
+                _dummy.scale.set(1, 1, 1);
+                _dummy.updateMatrix();
+                leavesInstanced.setMatrixAt(leafIdx++, _dummy.matrix);
+            }
+        }
+        trunkInstanced.instanceMatrix.needsUpdate = true;
+        leavesInstanced.instanceMatrix.needsUpdate = true;
+        this.group.add(trunkInstanced);
+        this.group.add(leavesInstanced);
+
+        // 2. Instanced Houses (Walls & Roofs in 2 draw calls)
         const houseCount = this.type === 'capital' ? 4 : (this.type === 'harbor' ? 3 : 2);
+        const wallsInstanced = new THREE.InstancedMesh(SHARED_HOUSE_WALL_GEO, SHARED_HOUSE_WALL_MAT, houseCount);
+        wallsInstanced.castShadow = true;
+        const roofInstanced = new THREE.InstancedMesh(SHARED_HOUSE_ROOF_GEO, SHARED_HOUSE_ROOF_MAT, houseCount);
+
         for (let i = 0; i < houseCount; i++) {
             const angle = (i / houseCount) * Math.PI * 2 + 0.8;
             const dist = rand(this.radius * 0.25, this.radius * 0.6);
-            this.createHouse(Math.cos(angle) * dist, 2.1, Math.sin(angle) * dist, angle + Math.PI / 2);
-        }
+            const hx = Math.cos(angle) * dist;
+            const hz = Math.sin(angle) * dist;
+            const hy = 2.1;
+            const rotY = angle + Math.PI / 2;
 
-        // Low-Poly Rocks
+            _dummy.position.set(hx, hy + 0.6, hz);
+            _dummy.rotation.set(0, rotY, 0);
+            _dummy.scale.set(1, 1, 1);
+            _dummy.updateMatrix();
+            wallsInstanced.setMatrixAt(i, _dummy.matrix);
+
+            _dummy.position.set(hx, hy + 1.6, hz);
+            _dummy.rotation.set(0, rotY + Math.PI / 4, 0);
+            _dummy.scale.set(1, 1, 1);
+            _dummy.updateMatrix();
+            roofInstanced.setMatrixAt(i, _dummy.matrix);
+        }
+        wallsInstanced.instanceMatrix.needsUpdate = true;
+        roofInstanced.instanceMatrix.needsUpdate = true;
+        this.group.add(wallsInstanced);
+        this.group.add(roofInstanced);
+
+        // 3. Instanced Rocks (1 draw call)
+        const rockInstanced = new THREE.InstancedMesh(SHARED_ROCK_GEO, SHARED_ROCK_MAT, 4);
         for (let i = 0; i < 4; i++) {
             const angle = rand(0, Math.PI * 2);
             const dist = rand(this.radius * 0.7, this.radius * 0.95);
-            this.createRock(Math.cos(angle) * dist, 0.9, Math.sin(angle) * dist);
+            const s = 0.7 + Math.random() * 0.5;
+            _dummy.position.set(Math.cos(angle) * dist, 0.9, Math.sin(angle) * dist);
+            _dummy.rotation.set(Math.random(), Math.random(), Math.random());
+            _dummy.scale.set(s, s, s);
+            _dummy.updateMatrix();
+            rockInstanced.setMatrixAt(i, _dummy.matrix);
         }
+        rockInstanced.instanceMatrix.needsUpdate = true;
+        this.group.add(rockInstanced);
 
-        // Wooden Dock extending toward water
+        // 4. Wooden Dock extending toward water
         this.createDock();
 
         // Lighthouse if lighthouse type
         if (this.type === 'lighthouse') {
             this.createLighthouse();
         }
-    }
-
-    createPalmTree(x, y, z) {
-        const palmGroup = new THREE.Group();
-        palmGroup.position.set(x, y, z);
-
-        const trunkGeo = new THREE.CylinderGeometry(0.12, 0.22, 2.8, 6);
-        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x854d0e, roughness: 0.9, flatShading: true });
-        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-        trunk.position.y = 1.4;
-        trunk.rotation.z = (Math.random() - 0.5) * 0.25;
-        trunk.rotation.x = (Math.random() - 0.5) * 0.25;
-        trunk.castShadow = true;
-        palmGroup.add(trunk);
-
-        const leafMat = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.6, flatShading: true });
-        for (let i = 0; i < 5; i++) {
-            const leafGeo = new THREE.ConeGeometry(0.7, 1.8, 4);
-            const leaf = new THREE.Mesh(leafGeo, leafMat);
-            const leafAngle = (i / 5) * Math.PI * 2;
-            leaf.position.set(Math.cos(leafAngle) * 0.6, 2.8, Math.sin(leafAngle) * 0.6);
-            leaf.rotation.x = Math.sin(leafAngle) * 1.1;
-            leaf.rotation.z = -Math.cos(leafAngle) * 1.1;
-            leaf.castShadow = true;
-            palmGroup.add(leaf);
-        }
-
-        this.group.add(palmGroup);
-    }
-
-    createHouse(x, y, z, rotY) {
-        const houseGroup = new THREE.Group();
-        houseGroup.position.set(x, y, z);
-        houseGroup.rotation.y = rotY;
-
-        const wallGeo = new THREE.BoxGeometry(1.6, 1.2, 1.4);
-        const wallMat = new THREE.MeshStandardMaterial({ color: 0xfef08a, roughness: 0.8, flatShading: true });
-        const walls = new THREE.Mesh(wallGeo, wallMat);
-        walls.position.y = 0.6;
-        walls.castShadow = true;
-        houseGroup.add(walls);
-
-        const roofGeo = new THREE.ConeGeometry(1.4, 1.0, 4);
-        const roofMat = new THREE.MeshStandardMaterial({ color: 0xe11d48, roughness: 0.7, flatShading: true });
-        const roof = new THREE.Mesh(roofGeo, roofMat);
-        roof.position.y = 1.6;
-        roof.rotation.y = Math.PI / 4;
-        roof.castShadow = true;
-        houseGroup.add(roof);
-
-        this.group.add(houseGroup);
-    }
-
-    createRock(x, y, z) {
-        const rockGeo = new THREE.DodecahedronGeometry(0.65 + Math.random() * 0.4, 0);
-        const rockMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.9, flatShading: true });
-        const rock = new THREE.Mesh(rockGeo, rockMat);
-        rock.position.set(x, y, z);
-        rock.rotation.set(Math.random(), Math.random(), Math.random());
-        rock.castShadow = true;
-        this.group.add(rock);
     }
 
     createDock() {
@@ -174,11 +188,8 @@ export class Island {
         dockGroup.position.set(dockX, 0.45, dockZ);
         dockGroup.rotation.y = -angle;
 
-        const plankGeo = new THREE.BoxGeometry(1.8, 0.18, 4.2);
-        const plankMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.9 });
-        const planks = new THREE.Mesh(plankGeo, plankMat);
+        const planks = new THREE.Mesh(SHARED_DOCK_GEO, SHARED_DOCK_MAT);
         planks.position.z = 1.5;
-        planks.castShadow = true;
         dockGroup.add(planks);
 
         this.group.add(dockGroup);
@@ -189,18 +200,13 @@ export class Island {
         lightGroup.position.set(0, 2.5, 0);
 
         const towerGeo = new THREE.CylinderGeometry(0.7, 1.1, 5.5, 12);
-        const towerMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.6 });
+        const towerMat = new THREE.MeshLambertMaterial({ color: 0xf8fafc });
         const tower = new THREE.Mesh(towerGeo, towerMat);
         tower.position.y = 2.75;
-        tower.castShadow = true;
         lightGroup.add(tower);
 
         const lanternGeo = new THREE.CylinderGeometry(0.8, 0.8, 0.9, 8);
-        const lanternMat = new THREE.MeshStandardMaterial({
-            color: 0xfef08a,
-            emissive: 0xfef08a,
-            emissiveIntensity: 0.9,
-        });
+        const lanternMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
         const lantern = new THREE.Mesh(lanternGeo, lanternMat);
         lantern.position.y = 5.6;
         lightGroup.add(lantern);

@@ -36,6 +36,12 @@ const clients = new Map();
 // Grace period timers for transient disconnects (10 seconds)
 const disconnectGraceTimers = new Map(); // god_id -> { timer, name }
 
+// In-memory throttling for Redis position updates (max 1 write / sec per god)
+const lastPosRedisWrite = new Map(); // god_id -> timestamp
+
+// In-memory event-driven tracking of drowning citizens (eliminates 1s /api/world polling)
+const activeDrowningWatch = new Map(); // citizen_id -> deadline_at
+
 // Helper to broadcast to all connected WebSocket clients
 function broadcastToAll(payload, excludeWs = null) {
     const raw = typeof payload === 'string' ? payload : JSON.stringify(payload);
@@ -64,6 +70,21 @@ redisSub.on('message', (channel, message) => {
         try {
             const parsed = JSON.parse(message);
             broadcastToAll(parsed);
+
+            // In-memory event-driven drowning tracker (eliminates all /api/world polling)
+            if (parsed.event_type === 'citizen.thrown' && parsed.payload?.outcome === 'landed_ocean') {
+                if (parsed.payload.citizen_id && parsed.payload.drowning_deadline_at) {
+                    activeDrowningWatch.set(parsed.payload.citizen_id, parsed.payload.drowning_deadline_at);
+                }
+            } else if (parsed.event_type === 'citizen.drowning' && parsed.payload?.citizen_id) {
+                if (parsed.payload.drowning_deadline_at) {
+                    activeDrowningWatch.set(parsed.payload.citizen_id, parsed.payload.drowning_deadline_at);
+                }
+            } else if (parsed.event_type === 'citizen.rescued' || parsed.event_type === 'citizen.drowned') {
+                if (parsed.payload?.citizen_id) {
+                    activeDrowningWatch.delete(parsed.payload.citizen_id);
+                }
+            }
         } catch (e) {
             console.error('[Paradise-WS] Invalid JSON received from Redis:', message);
         }
@@ -126,13 +147,13 @@ wss.on('connection', (ws, req) => {
 
                     clients.set(ws, { god_id, uuid, name, god_color });
 
-                    // Register presence in Redis
+                    // Register presence in Redis (45s TTL)
                     await redisCmd.sadd('paradise:online_gods', String(god_id));
                     await redisCmd.set(
                         `paradise:presence:${god_id}`,
                         JSON.stringify({ god_id, uuid, name, god_color, joined_at: Date.now() }),
                         'EX',
-                        3600
+                        45
                     );
 
                     // Always broadcast join if this is the first active connection for this god
@@ -172,8 +193,8 @@ wss.on('connection', (ws, req) => {
                 case 'god.heartbeat': {
                     const clientData = clients.get(ws);
                     if (clientData && clientData.god_id) {
-                        await redisCmd.expire(`paradise:presence:${clientData.god_id}`, 3600);
-                        await redisCmd.expire(`paradise:pos:${clientData.god_id}`, 300);
+                        await redisCmd.expire(`paradise:presence:${clientData.god_id}`, 45);
+                        await redisCmd.expire(`paradise:pos:${clientData.god_id}`, 45);
                     }
                     break;
                 }
@@ -186,15 +207,19 @@ wss.on('connection', (ws, req) => {
                     const pos = msg.position;
                     const focus = msg.focus || null;
 
-                    // Update position in Redis
-                    await redisCmd.set(
-                        `paradise:pos:${god_id}`,
-                        JSON.stringify(pos),
-                        'EX',
-                        300
-                    );
+                    // Throttled update to Redis (max 1 write / sec per god) to reduce Redis load
+                    const now = Date.now();
+                    if (now - (lastPosRedisWrite.get(god_id) || 0) > 1000) {
+                        lastPosRedisWrite.set(god_id, now);
+                        redisCmd.set(
+                            `paradise:pos:${god_id}`,
+                            JSON.stringify(pos),
+                            'EX',
+                            45
+                        ).catch(() => {});
+                    }
 
-                    // Broadcast movement to all other clients immediately
+                    // Broadcast movement to all other clients immediately in-memory
                     broadcastToAll(
                         {
                             event_type: 'god.moved',
@@ -349,41 +374,30 @@ const heartbeatInterval = setInterval(() => {
     }
 }, 30000);
 
-// Authoritative Drowning Ticker: runs every 1000ms
+// Backup Authoritative Drowning Ticker: checks in-memory watch map every 3000ms (zero database/world polling)
 let isCheckingDrowning = false;
 const drowningTicker = setInterval(async () => {
-    if (isCheckingDrowning) return;
+    if (isCheckingDrowning || activeDrowningWatch.size === 0) return;
     isCheckingDrowning = true;
     try {
-        const resp = await fetch(`${LARAVEL_API_URL}/api/world`);
-        if (resp.ok) {
-            const data = await resp.json();
-            const now = Date.now();
-            const drowningCitizens = (data.citizens || []).filter(
-                (c) => c.status === 'drowning' && c.drowning_deadline_at && c.drowning_deadline_at <= now
-            );
-
-            for (const dc of drowningCitizens) {
-                console.log(`[Paradise-WS] Citizen ${dc.name} (${dc.id}) deadline expired. Triggering authoritative drown...`);
+        const now = Date.now();
+        for (const [citizenId, deadlineAt] of activeDrowningWatch.entries()) {
+            if (now >= deadlineAt) {
+                activeDrowningWatch.delete(citizenId);
                 try {
-                    const drownResp = await fetch(`${LARAVEL_API_URL}/api/citizens/${dc.id}/drown`, {
+                    await fetch(`${LARAVEL_API_URL}/api/citizens/${citizenId}/drown`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                     });
-                    if (drownResp.ok) {
-                        console.log(`[Paradise-WS] Authoritative drown completed for ${dc.name}.`);
-                    }
                 } catch (derr) {
-                    console.error(`[Paradise-WS] Error finalizing drown for ${dc.id}:`, derr.message);
+                    console.error(`[Paradise-WS] Backup drown error for citizen ${citizenId}:`, derr.message);
                 }
             }
         }
-    } catch (e) {
-        // Ignore network hiccups while Laravel server might be starting up
     } finally {
         isCheckingDrowning = false;
     }
-}, 1000);
+}, 3000);
 
 // Graceful shutdown
 process.on('SIGTERM', () => {

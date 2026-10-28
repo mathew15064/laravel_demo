@@ -36,6 +36,8 @@ export class Ocean {
         this.mesh.name = 'ocean';
         this.scene.add(this.mesh);
 
+        this.lastWaveUpdate = 0;
+
         // Deep ocean sea bed under the water
         const bedGeo = new THREE.PlaneGeometry(size, size, 1, 1);
         bedGeo.rotateX(-Math.PI / 2);
@@ -46,16 +48,25 @@ export class Ocean {
     }
 
     update(elapsedTime) {
+        // Throttle wave vertex updates to ~30 FPS for high CPU efficiency
+        const now = performance.now();
+        if (now - this.lastWaveUpdate < 32) return;
+        this.lastWaveUpdate = now;
+
         const pos = this.geometry.attributes.position;
-        for (let i = 0; i < pos.count; i++) {
-            const u = pos.getX(i);
-            const w = pos.getZ(i);
+        const array = pos.array;
+        const count = pos.count;
+
+        for (let i = 0; i < count; i++) {
+            const idx = i * 3;
+            const u = array[idx];
+            const w = array[idx + 2];
             const wave = Math.sin(u * 0.08 + elapsedTime * 1.5) * 0.18 +
                          Math.cos(w * 0.08 + elapsedTime * 1.2) * 0.15;
-            pos.setY(i, this.originalY[i] + wave);
+            array[idx + 1] = this.originalY[i] + wave;
         }
         pos.needsUpdate = true;
-        this.geometry.computeVertexNormals();
+        // computeVertexNormals omitted because flatShading uses GPU screen-space derivatives
     }
 
     dispose() {

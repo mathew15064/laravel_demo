@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+import { PERFORMANCE_CONFIG } from '../config/performance.js';
 
 /**
  * Paradise Gods - Tropical Environment
@@ -22,10 +24,10 @@ export class Environment {
         this.sunLight = new THREE.DirectionalLight(0xfffaed, 1.8);
         this.sunLight.position.set(60, 80, 50);
         this.sunLight.castShadow = true;
-        this.sunLight.shadow.mapSize.width = 2048;
-        this.sunLight.shadow.mapSize.height = 2048;
+        this.sunLight.shadow.mapSize.width = PERFORMANCE_CONFIG.shadowMapSize;
+        this.sunLight.shadow.mapSize.height = PERFORMANCE_CONFIG.shadowMapSize;
         this.sunLight.shadow.camera.near = 10;
-        this.sunLight.shadow.camera.far = 250;
+        this.sunLight.shadow.camera.far = PERFORMANCE_CONFIG.shadowCameraFar;
         const d = 90;
         this.sunLight.shadow.camera.left = -d;
         this.sunLight.shadow.camera.right = d;
@@ -43,38 +45,39 @@ export class Environment {
     }
 
     createClouds() {
-        const cloudCount = 12;
-        const cloudMat = new THREE.MeshStandardMaterial({
+        const cloudCount = 8;
+        const cloudMat = new THREE.MeshLambertMaterial({
             color: 0xffffff,
-            roughness: 0.9,
             flatShading: true,
             transparent: true,
             opacity: 0.85,
         });
 
         for (let i = 0; i < cloudCount; i++) {
-            const cloud = new THREE.Group();
             const puffCount = 4 + Math.floor(Math.random() * 3);
+            const puffGeos = [];
             for (let p = 0; p < puffCount; p++) {
                 const puffSize = 2.5 + Math.random() * 2.0;
                 const puffGeo = new THREE.DodecahedronGeometry(puffSize, 0);
-                const puff = new THREE.Mesh(puffGeo, cloudMat);
-                puff.position.set(
+                puffGeo.translate(
                     (p - puffCount / 2) * 2.2,
                     (Math.random() - 0.5) * 1.0,
                     (Math.random() - 0.5) * 1.5
                 );
-                cloud.add(puff);
+                puffGeos.push(puffGeo);
             }
+
+            const mergedCloudGeo = BufferGeometryUtils.mergeGeometries(puffGeos, false);
+            const cloudMesh = new THREE.Mesh(mergedCloudGeo, cloudMat);
 
             const x = (Math.random() - 0.5) * 160;
             const y = 24 + Math.random() * 12;
             const z = (Math.random() - 0.5) * 160;
-            cloud.position.set(x, y, z);
-            cloud.userData = { speed: 0.04 + Math.random() * 0.04 };
+            cloudMesh.position.set(x, y, z);
+            cloudMesh.userData = { speed: 0.04 + Math.random() * 0.04 };
 
-            this.scene.add(cloud);
-            this.clouds.push(cloud);
+            this.scene.add(cloudMesh);
+            this.clouds.push(cloudMesh);
         }
     }
 

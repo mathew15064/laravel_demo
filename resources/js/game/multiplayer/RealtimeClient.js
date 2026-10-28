@@ -1,3 +1,5 @@
+import { PERFORMANCE_CONFIG } from '../config/performance.js';
+
 /**
  * Paradise Gods - Realtime WebSocket Client
  * Connects browser to central WebSocket server, manages 2-way event synchronization,
@@ -22,13 +24,15 @@ export class RealtimeClient {
         this.disconnectNoticeTimer = null;
         this.degradedNoticeTimer = null;
 
-        // Throttled movement sender (~12 updates/sec)
+        // Throttled movement sender (10 Hz with distance threshold)
         this.lastMoveSentAt = 0;
-        this.moveThrottleMs = 80;
+        this.moveThrottleMs = PERFORMANCE_CONFIG.godNetworkIntervalMs;
+        this.lastSentMovePos = { x: null, y: null, z: null };
 
-        // Throttled citizen drag sender (~15 updates/sec)
+        // Throttled citizen drag sender (15 Hz with distance threshold)
         this.lastCitizenDragSentAt = 0;
-        this.citizenDragThrottleMs = 65;
+        this.citizenDragThrottleMs = PERFORMANCE_CONFIG.heldCitizenIntervalMs;
+        this.lastSentDragPos = { x: null, y: null, z: null };
 
         // UI Indicator element
         this.indicatorEl = document.getElementById('reconnect-indicator');
@@ -59,12 +63,12 @@ export class RealtimeClient {
             'world.reset': [],
         };
 
-        // Heartbeat interval (every 5 seconds)
+        // Heartbeat interval (~10 seconds)
         this.heartbeatInterval = setInterval(() => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                 this.socket.send(JSON.stringify({ type: 'god.heartbeat' }));
             }
-        }, 5000);
+        }, PERFORMANCE_CONFIG.heartbeatIntervalMs);
     }
 
     on(eventType, callback) {
@@ -230,7 +234,21 @@ export class RealtimeClient {
         if (now - this.lastMoveSentAt < this.moveThrottleMs) {
             return;
         }
+
+        // Distance threshold to eliminate idle packet spam
+        if (this.lastSentMovePos.x !== null) {
+            const dx = position.x - this.lastSentMovePos.x;
+            const dz = position.z - this.lastSentMovePos.z;
+            const dy = Math.abs(position.y - this.lastSentMovePos.y);
+            if (Math.hypot(dx, dz) < PERFORMANCE_CONFIG.godMovementThreshold && dy < 0.05) {
+                return;
+            }
+        }
+
         this.lastMoveSentAt = now;
+        this.lastSentMovePos.x = position.x;
+        this.lastSentMovePos.y = position.y;
+        this.lastSentMovePos.z = position.z;
 
         this.socket.send(JSON.stringify({
             type: 'god.move',
@@ -254,7 +272,21 @@ export class RealtimeClient {
         if (now - this.lastCitizenDragSentAt < this.citizenDragThrottleMs) {
             return;
         }
+
+        // Distance threshold
+        if (this.lastSentDragPos.x !== null) {
+            const dx = position.x - this.lastSentDragPos.x;
+            const dz = position.z - this.lastSentDragPos.z;
+            const dy = Math.abs(position.y - this.lastSentDragPos.y);
+            if (Math.hypot(dx, dz) < PERFORMANCE_CONFIG.heldCitizenThreshold && dy < 0.05) {
+                return;
+            }
+        }
+
         this.lastCitizenDragSentAt = now;
+        this.lastSentDragPos.x = position.x;
+        this.lastSentDragPos.y = position.y;
+        this.lastSentDragPos.z = position.z;
 
         this.socket.send(JSON.stringify({
             type: 'citizen.drag',

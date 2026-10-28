@@ -11,6 +11,8 @@ import { SelectionSystem } from '../systems/SelectionSystem.js';
 import { GodManager } from '../multiplayer/GodManager.js';
 import { RealtimeClient } from '../multiplayer/RealtimeClient.js';
 
+import { PERFORMANCE_CONFIG } from '../config/performance.js';
+
 /**
  * Paradise Gods - Main 3D World (Thiên Đường Quần Đảo)
  * Manages Three.js rendering, Archipelago, Citizens, Realtime Multiplayer Sync, and Physics.
@@ -37,9 +39,9 @@ export class ParadiseWorld {
             powerPreference: 'high-performance',
         });
         this.renderer.setSize(width, height);
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERFORMANCE_CONFIG.maxPixelRatio));
         this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
         this.domElement = this.renderer.domElement;
         this.container.appendChild(this.domElement);
@@ -54,6 +56,9 @@ export class ParadiseWorld {
 
         this.islands = [];
         this.citizens = [];
+
+        this.lastLabelUpdate = 0;
+        this.localPresencePos = { x: 0, y: 8.0, z: 0 };
 
         this.ocean = new Ocean(this.scene, 320);
         this.environment = new Environment(this.scene);
@@ -579,19 +584,54 @@ export class ParadiseWorld {
             citizen.update(delta, elapsed, this.islands);
         });
 
+        // Throttle culling and LOD checks (~3 Hz)
+        if (performance.now() - this.lastLabelUpdate > PERFORMANCE_CONFIG.labelVisibilityIntervalMs) {
+            this.lastLabelUpdate = performance.now();
+            this.updateCullingAndLOD();
+        }
+
         // Send local God presence position to network (floating presence point above camera target)
         if (this.currentGod && this.controls?.target) {
-            this.realtimeClient.sendMove(
-                {
-                    x: this.controls.target.x,
-                    y: 8.0,
-                    z: this.controls.target.z,
-                },
-                this.controls.target
-            );
+            this.localPresencePos.x = this.controls.target.x;
+            this.localPresencePos.y = 8.0;
+            this.localPresencePos.z = this.controls.target.z;
+            this.realtimeClient.sendMove(this.localPresencePos, this.controls.target);
         }
 
         this.renderer.render(this.scene, this.camera);
+    }
+
+    updateCullingAndLOD() {
+        const camPos = this.camera.position;
+        const labelThresholdSq = PERFORMANCE_CONFIG.labelDistanceThresholdSq;
+        const limbLodThresholdSq = 50 * 50; // 50 units
+        const selectedCit = this.ui?.citizenPanel?.selectedCitizen;
+        let labelCount = 0;
+
+        for (let i = 0; i < this.citizens.length; i++) {
+            const c = this.citizens[i];
+            const isUrgent = c.status === 'drowning' || c.status === 'held' || c === selectedCit;
+            const distSq = c.group.position.distanceToSquared(camPos);
+
+            // 1. Label culling: max visible labels
+            if (c.labelSprite) {
+                if (isUrgent || (distSq < labelThresholdSq && labelCount < PERFORMANCE_CONFIG.maxVisibleLabels)) {
+                    c.labelSprite.visible = true;
+                    labelCount++;
+                } else {
+                    c.labelSprite.visible = false;
+                }
+            }
+
+            // 2. Limb Level of Detail (LOD): hide distant tiny sub-limbs to minimize draw calls
+            const showLimbs = isUrgent || distSq < limbLodThresholdSq;
+            if (c.leftArm && c.leftArm.visible !== showLimbs) {
+                c.leftArm.visible = showLimbs;
+                c.rightArm.visible = showLimbs;
+                c.leftLeg.visible = showLimbs;
+                c.rightLeg.visible = showLimbs;
+            }
+        }
     }
 
     dispose() {

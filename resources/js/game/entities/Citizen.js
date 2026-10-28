@@ -1,4 +1,49 @@
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+
+// Pre-merge torso, head, and hair into a single multi-material static geometry (1 draw call)
+const _torsoPart = new THREE.BoxGeometry(0.5, 0.65, 0.32);
+_torsoPart.translate(0, 0.8, 0);
+
+const _headPart = new THREE.BoxGeometry(0.38, 0.4, 0.36);
+_headPart.translate(0, 1.35, 0);
+
+const _hairPart = new THREE.BoxGeometry(0.4, 0.16, 0.38);
+_hairPart.translate(0, 1.55, 0);
+
+const SHARED_BODY_GEO = BufferGeometryUtils.mergeGeometries([_torsoPart, _headPart, _hairPart], true);
+
+const SHARED_ARM_GEO = new THREE.BoxGeometry(0.14, 0.5, 0.14);
+SHARED_ARM_GEO.translate(0, -0.22, 0); // pivot at shoulder
+
+const SHARED_LEG_GEO = new THREE.BoxGeometry(0.18, 0.55, 0.18);
+SHARED_LEG_GEO.translate(0, -0.25, 0); // pivot at hip
+
+const SHARED_AURA_GEO = new THREE.RingGeometry(0.8, 1.2, 16);
+
+// Shared static materials
+const SHARED_HAIR_MAT = new THREE.MeshLambertMaterial({ color: 0x27272a, flatShading: true });
+const SHARED_PANTS_MAT = new THREE.MeshLambertMaterial({ color: 0x1e293b, flatShading: true });
+
+// Palette caches for skin tones and clothing
+const skinMatCache = new Map();
+function getSkinMaterial(colorHex) {
+    if (!skinMatCache.has(colorHex)) {
+        skinMatCache.set(colorHex, new THREE.MeshLambertMaterial({ color: colorHex, flatShading: true }));
+    }
+    return skinMatCache.get(colorHex);
+}
+
+const clothMatCache = new Map();
+function getClothMaterial(colorHex) {
+    if (!clothMatCache.has(colorHex)) {
+        clothMatCache.set(colorHex, new THREE.MeshLambertMaterial({ color: colorHex, flatShading: true }));
+    }
+    return clothMatCache.get(colorHex);
+}
+
+// Module-level scratch vector to eliminate GC churn in render loop
+const _walkDir = new THREE.Vector3();
 
 /**
  * Paradise Gods - Stylized Citizen Entity
@@ -29,7 +74,8 @@ export class Citizen {
 
         // Animation state
         this.state = this.status === 'drowning' ? 'drowning' : (this.status === 'held' ? 'held' : 'idle');
-        this.walkTarget = null;
+        this.walkTarget = new THREE.Vector3();
+        this.hasWalkTarget = false;
         this.walkSpeed = 1.6;
         this.walkTimer = Math.random() * 3.0;
         this.currentIsland = null;
@@ -50,17 +96,21 @@ export class Citizen {
     }
 
     buildAura() {
-        const auraGeo = new THREE.RingGeometry(0.8, 1.2, 24);
         const auraMat = new THREE.MeshBasicMaterial({
             color: 0x8b5cf6,
             side: THREE.DoubleSide,
             transparent: true,
             opacity: 0,
         });
-        this.auraMesh = new THREE.Mesh(auraGeo, auraMat);
+        this.auraMesh = new THREE.Mesh(SHARED_AURA_GEO, auraMat);
         this.auraMesh.rotation.x = -Math.PI / 2;
         this.auraMesh.position.y = 0.1;
+        this.auraMesh.visible = false; // Hidden by default when not held to eliminate 44 empty draw calls
         this.group.add(this.auraMesh);
+
+        if (this.heldByGodId) {
+            this.setHoldingGod(this.heldByGodId, this.heldByName, this.heldByColor);
+        }
     }
 
     setHoldingGod(godId, godName = null, godColor = '#8b5cf6') {
@@ -72,6 +122,7 @@ export class Citizen {
             const colorInt = parseInt(godColor.replace('#', '0x'), 16) || 0x8b5cf6;
             this.auraMesh.material.color.setHex(colorInt);
             this.auraMesh.material.opacity = 0.6;
+            this.auraMesh.visible = true;
         }
     }
 
@@ -80,6 +131,7 @@ export class Citizen {
         this.heldByName = null;
         if (this.auraMesh) {
             this.auraMesh.material.opacity = 0;
+            this.auraMesh.visible = false;
         }
     }
 
@@ -90,64 +142,40 @@ export class Citizen {
     }
 
     buildMesh() {
-        const skinColorHex = parseInt(this.skinTone.replace('#', '0x'), 16);
-        const clothColorHex = parseInt(this.clothingColor.replace('#', '0x'), 16);
+        const skinColorHex = parseInt(this.skinTone.replace('#', '0x'), 16) || 0xE8C2A4;
+        const clothColorHex = parseInt(this.clothingColor.replace('#', '0x'), 16) || 0x3b82f6;
 
-        const skinMat = new THREE.MeshStandardMaterial({ color: skinColorHex, roughness: 0.8, flatShading: true });
-        const clothMat = new THREE.MeshStandardMaterial({ color: clothColorHex, roughness: 0.7, flatShading: true });
-        const hairMat = new THREE.MeshStandardMaterial({ color: 0x27272a, roughness: 0.9, flatShading: true });
-        const pantsMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8, flatShading: true });
+        const skinMat = getSkinMaterial(skinColorHex);
+        const clothMat = getClothMaterial(clothColorHex);
 
         // Root container for body parts to facilitate limb animations
         this.bodyContainer = new THREE.Group();
         this.group.add(this.bodyContainer);
 
-        // 1. Torso / Shirt
-        const torsoGeo = new THREE.BoxGeometry(0.5, 0.65, 0.32);
-        this.torso = new THREE.Mesh(torsoGeo, clothMat);
-        this.torso.position.y = 0.8;
-        this.torso.castShadow = true;
-        this.bodyContainer.add(this.torso);
+        // 1. Unified Body (Torso + Head + Hair) in 1 single mesh (eliminates 88 draw calls)
+        this.bodyMesh = new THREE.Mesh(SHARED_BODY_GEO, [clothMat, skinMat, SHARED_HAIR_MAT]);
+        this.torso = this.bodyMesh;
+        this.head = this.bodyMesh;
+        this.bodyContainer.add(this.bodyMesh);
 
-        // 2. Head
-        const headGeo = new THREE.BoxGeometry(0.38, 0.4, 0.36);
-        this.head = new THREE.Mesh(headGeo, skinMat);
-        this.head.position.y = 1.35;
-        this.head.castShadow = true;
-        this.bodyContainer.add(this.head);
-
-        // Hair / Cap
-        const hairGeo = new THREE.BoxGeometry(0.4, 0.16, 0.38);
-        const hair = new THREE.Mesh(hairGeo, hairMat);
-        hair.position.y = 1.55;
-        this.bodyContainer.add(hair);
-
-        // 3. Left Arm
-        const armGeo = new THREE.BoxGeometry(0.14, 0.5, 0.14);
-        armGeo.translate(0, -0.22, 0); // pivot at shoulder
-        this.leftArm = new THREE.Mesh(armGeo, skinMat);
+        // 2. Left Arm (limbs do not cast shadow to save hundreds of draw calls)
+        this.leftArm = new THREE.Mesh(SHARED_ARM_GEO, skinMat);
         this.leftArm.position.set(-0.32, 1.05, 0);
-        this.leftArm.castShadow = true;
         this.bodyContainer.add(this.leftArm);
 
-        // 4. Right Arm
-        this.rightArm = new THREE.Mesh(armGeo, skinMat);
+        // 3. Right Arm
+        this.rightArm = new THREE.Mesh(SHARED_ARM_GEO, skinMat);
         this.rightArm.position.set(0.32, 1.05, 0);
-        this.rightArm.castShadow = true;
         this.bodyContainer.add(this.rightArm);
 
-        // 5. Left Leg
-        const legGeo = new THREE.BoxGeometry(0.18, 0.55, 0.18);
-        legGeo.translate(0, -0.25, 0); // pivot at hip
-        this.leftLeg = new THREE.Mesh(legGeo, pantsMat);
+        // 4. Left Leg
+        this.leftLeg = new THREE.Mesh(SHARED_LEG_GEO, SHARED_PANTS_MAT);
         this.leftLeg.position.set(-0.14, 0.5, 0);
-        this.leftLeg.castShadow = true;
         this.bodyContainer.add(this.leftLeg);
 
-        // 6. Right Leg
-        this.rightLeg = new THREE.Mesh(legGeo, pantsMat);
+        // 5. Right Leg
+        this.rightLeg = new THREE.Mesh(SHARED_LEG_GEO, SHARED_PANTS_MAT);
         this.rightLeg.position.set(0.14, 0.5, 0);
-        this.rightLeg.castShadow = true;
         this.bodyContainer.add(this.rightLeg);
     }
 
@@ -282,18 +310,20 @@ export class Citizen {
         this.walkTimer -= delta;
         if (this.walkTimer <= 0) {
             if (this.state === 'idle') {
-                // Pick destination on current island
+                // Pick destination on current island without new allocations
                 const angle = Math.random() * Math.PI * 2;
                 const dist = Math.random() * (this.currentIsland.radius * 0.65);
-                this.walkTarget = new THREE.Vector3(
+                this.walkTarget.set(
                     this.currentIsland.worldX + Math.cos(angle) * dist,
                     2.0,
                     this.currentIsland.worldZ + Math.sin(angle) * dist
                 );
+                this.hasWalkTarget = true;
                 this.state = 'walk';
                 this.walkTimer = 3.0 + Math.random() * 5.0;
             } else {
                 this.state = 'idle';
+                this.hasWalkTarget = false;
                 this.walkTimer = 2.0 + Math.random() * 4.0;
                 // Reset limb rotations
                 this.leftArm.rotation.x = 0;
@@ -303,17 +333,18 @@ export class Citizen {
             }
         }
 
-        if (this.state === 'walk' && this.walkTarget) {
-            const dir = new THREE.Vector3().subVectors(this.walkTarget, this.group.position);
-            dir.y = 0;
-            const dist = dir.length();
+        if (this.state === 'walk' && this.hasWalkTarget) {
+            _walkDir.subVectors(this.walkTarget, this.group.position);
+            _walkDir.y = 0;
+            const dist = _walkDir.length();
 
             if (dist < 0.25) {
                 this.state = 'idle';
+                this.hasWalkTarget = false;
             } else {
-                dir.normalize();
-                this.group.position.addScaledVector(dir, this.walkSpeed * delta);
-                this.group.rotation.y = Math.atan2(dir.x, dir.z);
+                _walkDir.normalize();
+                this.group.position.addScaledVector(_walkDir, this.walkSpeed * delta);
+                this.group.rotation.y = Math.atan2(_walkDir.x, _walkDir.z);
 
                 // Swing limbs
                 const walkCycle = Math.sin(elapsedTime * 8.0);
@@ -367,12 +398,8 @@ export class Citizen {
 
     dispose() {
         this.scene.remove(this.group);
-        this.group.traverse((obj) => {
-            if (obj.geometry) obj.geometry.dispose();
-            if (obj.material) {
-                if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
-                else obj.material.dispose();
-            }
-        });
+        if (this.labelTex) this.labelTex.dispose();
+        if (this.labelSprite?.material) this.labelSprite.material.dispose();
+        if (this.auraMesh?.material) this.auraMesh.material.dispose();
     }
 }

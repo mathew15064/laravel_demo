@@ -23,7 +23,6 @@ export class Island {
 
         this.buildTerrain();
         this.buildDecorations();
-        this.buildGovernanceBanner();
         this.buildLabel();
         this.buildHighlightRing();
 
@@ -210,58 +209,25 @@ export class Island {
     }
 
     buildGovernanceBanner() {
-        if (this.bannerGroup) {
-            this.group.remove(this.bannerGroup);
-        }
-
-        const govGod = this.data.governing_god;
-        const colorHex = govGod?.god_color || '#8b5cf6';
-        const colorInt = parseInt(colorHex.replace('#', '0x'), 16);
-
-        if (!this.data.governed_by_god_id) return;
-
-        this.bannerGroup = new THREE.Group();
-        this.bannerGroup.position.set(0.5, 3.2, -0.5);
-
-        // Flagpole
-        const poleGeo = new THREE.CylinderGeometry(0.06, 0.08, 4.2, 8);
-        const poleMat = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.8, roughness: 0.3 });
-        const pole = new THREE.Mesh(poleGeo, poleMat);
-        pole.position.y = 2.1;
-        this.bannerGroup.add(pole);
-
-        // Flag banner cloth
-        const flagGeo = new THREE.BoxGeometry(1.6, 0.9, 0.05);
-        const flagMat = new THREE.MeshStandardMaterial({
-            color: colorInt,
-            emissive: colorInt,
-            emissiveIntensity: 0.3,
-            roughness: 0.6,
-        });
-        const flag = new THREE.Mesh(flagGeo, flagMat);
-        flag.position.set(0.85, 3.6, 0);
-        this.bannerGroup.add(flag);
-
-        this.group.add(this.bannerGroup);
+        // No flags or banners in cooperative shared world
     }
 
     buildLabel() {
         const canvas = document.createElement('canvas');
         canvas.width = 280;
-        canvas.height = 96;
+        canvas.height = 84;
         const ctx = canvas.getContext('2d');
 
-        const govGod = this.data.governing_god;
-        const borderColor = govGod?.god_color || '#38bdf8';
+        const borderColor = '#38bdf8';
 
         ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
         ctx.strokeStyle = borderColor;
         ctx.lineWidth = 3.5;
         ctx.beginPath();
         if (ctx.roundRect) {
-            ctx.roundRect(6, 6, 268, 84, 14);
+            ctx.roundRect(6, 6, 268, 72, 14);
         } else {
-            ctx.rect(6, 6, 268, 84);
+            ctx.rect(6, 6, 268, 72);
         }
         ctx.fill();
         ctx.stroke();
@@ -269,21 +235,11 @@ export class Island {
         ctx.font = 'bold 22px system-ui, sans-serif';
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
-        ctx.fillText(this.name, 140, 34);
+        ctx.fillText(this.name, 140, 36);
 
-        if (this.data.banner_name) {
-            ctx.font = 'italic 12px system-ui, sans-serif';
-            ctx.fillStyle = borderColor;
-            ctx.fillText(this.data.banner_name, 140, 54);
-
-            ctx.font = '13px monospace, sans-serif';
-            ctx.fillStyle = '#38bdf8';
-            ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 76);
-        } else {
-            ctx.font = '14px monospace, sans-serif';
-            ctx.fillStyle = '#38bdf8';
-            ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 64);
-        }
+        ctx.font = '14px monospace, sans-serif';
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 60);
 
         this.labelTexture = new THREE.CanvasTexture(canvas);
         const spriteMat = new THREE.SpriteMaterial({
@@ -292,37 +248,30 @@ export class Island {
             depthTest: false,
         });
         this.labelSprite = new THREE.Sprite(spriteMat);
-        this.labelSprite.scale.set(4.6, 1.5, 1);
+        this.labelSprite.scale.set(4.6, 1.4, 1);
         this.labelSprite.position.set(0, 6.2, 0);
         this.group.add(this.labelSprite);
     }
 
-    updateLabel(newName = null, newPopulation = null, newGovernance = null) {
+    updateLabel(newName = null, newPopulation = null) {
         if (newName !== null) this.name = newName;
         if (newPopulation !== null) this.data.population = newPopulation;
-        if (newGovernance !== null) {
-            this.data.governed_by_god_id = newGovernance.governed_by_god_id;
-            this.data.governing_god = newGovernance.governing_god;
-            this.data.banner_name = newGovernance.banner_name;
-            this.buildGovernanceBanner();
-        }
 
         const canvas = document.createElement('canvas');
         canvas.width = 280;
-        canvas.height = 96;
+        canvas.height = 84;
         const ctx = canvas.getContext('2d');
 
-        const govGod = this.data.governing_god;
-        const borderColor = govGod?.god_color || '#38bdf8';
+        const borderColor = '#38bdf8';
 
         ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
         ctx.strokeStyle = borderColor;
         ctx.lineWidth = 3.5;
         ctx.beginPath();
         if (ctx.roundRect) {
-            ctx.roundRect(6, 6, 268, 84, 14);
+            ctx.roundRect(6, 6, 268, 72, 14);
         } else {
-            ctx.rect(6, 6, 268, 84);
+            ctx.rect(6, 6, 268, 72);
         }
         ctx.fill();
         ctx.stroke();
@@ -330,24 +279,16 @@ export class Island {
         ctx.font = 'bold 22px system-ui, sans-serif';
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
-        ctx.fillText(this.name, 140, 34);
+        ctx.fillText(this.name, 140, 36);
 
-        if (this.data.banner_name) {
-            ctx.font = 'italic 12px system-ui, sans-serif';
-            ctx.fillStyle = borderColor;
-            ctx.fillText(this.data.banner_name, 140, 54);
+        ctx.font = '14px monospace, sans-serif';
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 60);
 
-            ctx.font = '13px monospace, sans-serif';
-            ctx.fillStyle = '#38bdf8';
-            ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 76);
-        } else {
-            ctx.font = '14px monospace, sans-serif';
-            ctx.fillStyle = '#38bdf8';
-            ctx.fillText(`Dân số: ${this.data.population ?? 0}`, 140, 64);
+        if (this.labelTexture) {
+            this.labelTexture.image = canvas;
+            this.labelTexture.needsUpdate = true;
         }
-
-        this.labelTexture.image = canvas;
-        this.labelTexture.needsUpdate = true;
     }
 
     buildHighlightRing() {

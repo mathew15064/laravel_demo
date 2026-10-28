@@ -66,7 +66,7 @@ export class ParadiseWorld {
             }
         });
 
-        this.realtimeClient = new RealtimeClient();
+        this.realtimeClient = new RealtimeClient(null, this.ui.toast);
 
         this.drowningSystem = new DrowningSystem(
             this.scene,
@@ -92,13 +92,9 @@ export class ParadiseWorld {
             this.domElement,
             this.controls,
             { getCitizenMeshes: () => this.citizens.map((c) => c.group) },
-            this.apiClient
+            this.apiClient,
+            this.realtimeClient
         );
-
-        this.throwSystem.onUnauthorizedThrow = (citizen) => {
-            const creator = citizen.creatorName || 'Vô Danh';
-            this.ui.toast.show(`Chỉ Thần ${creator} mới có quyền nhấc hoặc ném cư dân này!`, 'warning');
-        };
 
         this.throwSystem.onPickupCallback = (citizen) => {
             this.ui.toast.show(`Thần đã nhấc ${citizen.name} lên không trung!`);
@@ -175,20 +171,12 @@ export class ParadiseWorld {
             this.ui.toast.show(`Đã đổi tên đảo thành ${newName}.`, 'info');
         };
 
-        // Island claimed
-        this.ui.islandPanel.onIslandClaimed = (island, islandData) => {
-            this.ui.toast.show(`👑 Ngài đã xác lập quyền cai quản ${island.name}!`, 'success');
-        };
+        // Island claimed (no-op in cooperative shared world)
+        this.ui.islandPanel.onIslandClaimed = (island, islandData) => {};
 
         // Citizen Panel lift/throw
         this.ui.citizenPanel.onLiftCitizen = (citizen) => {
-            const creatorId = citizen.createdByGodId || citizen.data?.created_by_god_id;
-            if (this.currentGod && creatorId && creatorId !== this.currentGod.id && creatorId !== this.currentGod.god_id) {
-                this.ui.toast.show(`Chỉ Thần ${citizen.creatorName} mới có quyền ném cư dân này!`, 'warning');
-                return;
-            }
-
-            citizen.group.position.y = 5.0;
+            citizen.group.position.y = 5.5;
             const vx = (Math.random() - 0.5) * 14;
             const vz = (Math.random() - 0.5) * 14;
             citizen.velocity.set(vx, 12.0, vz);
@@ -199,7 +187,7 @@ export class ParadiseWorld {
                 method: 'POST',
                 body: JSON.stringify({
                     god_uuid: this.apiClient.getGodUuid(),
-                    start_position: { x: citizen.group.position.x, y: 5.0, z: citizen.group.position.z },
+                    start_position: { x: citizen.group.position.x, y: 5.5, z: citizen.group.position.z },
                     velocity: { x: vx, y: 12.0, z: vz },
                 }),
             });
@@ -213,15 +201,27 @@ export class ParadiseWorld {
             this.ui.citizenPanel.hide();
         };
 
-        // HUD click on online god
+        // HUD click on online god -> open profile & optionally focus on avatar position
         this.ui.hud.onSelectOnlineGod = (god) => {
             if (this.ui.godProfileModal) {
                 this.ui.godProfileModal.show(god);
+            }
+            const avatar = this.godManager.getAvatar(god.id || god.god_id);
+            if (avatar) {
+                this.selectionSystem.focusOn(avatar.group.position.x, avatar.group.position.z, 30);
             }
         };
     }
 
     initMultiplayerEvents() {
+        // 0. Initial Presence Sync on WebSocket connect/join
+        this.realtimeClient.on('presence.sync', (payload) => {
+            if (payload && Array.isArray(payload.online_gods)) {
+                this.godManager.syncOnlineGods(payload.online_gods, this.currentGod?.id);
+                this.ui.hud.updateOnlineGods(this.godManager.onlineGodsList);
+            }
+        });
+
         // 1. God joined
         this.realtimeClient.on('god.joined', (payload) => {
             const godId = payload.god_id;
@@ -263,6 +263,39 @@ export class ParadiseWorld {
             this.ui.toast.show(payload.message, 'info');
         });
 
+        // 4b. Citizen grabbed by another God
+        this.realtimeClient.on('citizen.grabbed', (payload) => {
+            const cit = this.citizens.find((c) => c.id === payload.citizen_id);
+            if (cit) {
+                cit.setHoldingGod(payload.god_id, payload.god_name, payload.god_color);
+                cit.group.position.y = 5.5;
+                if (this.currentGod && (this.currentGod.id !== payload.god_id && this.currentGod.god_id !== payload.god_id)) {
+                    this.ui.toast.show(payload.message || `✋ Thần ${payload.god_name} đang nhấc ${cit.name}!`, 'info');
+                }
+            }
+        });
+
+        // 4c. Citizen moved while held
+        this.realtimeClient.on('citizen.moved', (payload) => {
+            const cit = this.citizens.find((c) => c.id === payload.citizen_id);
+            if (cit && payload.position) {
+                cit.status = 'held';
+                cit.setTargetPosition(payload.position);
+            }
+        });
+
+        // 4d. Citizen released
+        this.realtimeClient.on('citizen.released', (payload) => {
+            const cit = this.citizens.find((c) => c.id === payload.citizen_id);
+            if (cit) {
+                cit.clearHoldingGod();
+                cit.status = 'alive';
+                if (payload.position) {
+                    cit.group.position.set(payload.position.x, payload.position.y || 2.0, payload.position.z);
+                }
+            }
+        });
+
         // 5. Citizen thrown
         this.realtimeClient.on('citizen.thrown', (payload) => {
             const cit = this.citizens.find((c) => c.id === payload.citizen_id);
@@ -276,12 +309,19 @@ export class ParadiseWorld {
             }
 
             if (payload.outcome === 'landed_ocean') {
-                setTimeout(() => {
-                    this.drowningSystem.startDrowning(
-                        cit,
-                        payload.drowning_deadline_at,
-                        payload.drowning_version || 1
-                    );
+                if (cit._flightTimeout) {
+                    clearTimeout(cit._flightTimeout);
+                }
+                const drownVersion = payload.drowning_version || 1;
+                cit._flightTimeout = setTimeout(() => {
+                    cit._flightTimeout = null;
+                    if (cit.status !== 'alive') {
+                        this.drowningSystem.startDrowning(
+                            cit,
+                            payload.drowning_deadline_at,
+                            drownVersion
+                        );
+                    }
                 }, (payload.flight_time || 1.0) * 1000);
             }
 
@@ -293,12 +333,22 @@ export class ParadiseWorld {
             const citizen = this.citizens.find((c) => c.id === payload.citizen_id);
             const saviorAvatar = this.godManager.getAvatar(payload.savior_id);
 
+            if (citizen) {
+                if (citizen._flightTimeout) {
+                    clearTimeout(citizen._flightTimeout);
+                    citizen._flightTimeout = null;
+                }
+                citizen.status = 'alive';
+                citizen.state = 'idle';
+                citizen.clearHoldingGod();
+            }
+
             // Play divine rescue beam from savior avatar to citizen!
             if (saviorAvatar && citizen) {
                 saviorAvatar.playRescueBeam(citizen.group.position);
             }
 
-            this.drowningSystem.handleRescueSuccess(payload.citizen_id, payload);
+            this.drowningSystem.handleRescueSuccess(payload.citizen_id, payload, citizen);
 
             if (payload.target_island_id) {
                 const island = this.islands.find((i) => i.id === payload.target_island_id);
@@ -329,22 +379,8 @@ export class ParadiseWorld {
             }
         });
 
-        // 9. Island claimed
-        this.realtimeClient.on('island.claimed', (payload) => {
-            const isl = this.islands.find((i) => i.id === payload.island_id);
-            if (isl) {
-                isl.updateLabel(null, null, {
-                    governed_by_god_id: payload.governed_by_god_id,
-                    governing_god: {
-                        id: payload.governed_by_god_id,
-                        name: payload.governing_god_name,
-                        god_color: payload.governing_god_color,
-                    },
-                    banner_name: payload.banner_name,
-                });
-            }
-            this.ui.toast.show(`👑 Thần ${payload.governing_god_name} đã xác lập quyền cai quản ${payload.island_name}!`, 'info');
-        });
+        // 9. Island claimed (deprecated - islands are shared territory)
+        this.realtimeClient.on('island.claimed', (payload) => {});
 
         // 10. Island renamed
         this.realtimeClient.on('island.renamed', (payload) => {
@@ -375,6 +411,63 @@ export class ParadiseWorld {
             this.ui.toast.show('Thế giới đã được tái khởi nguyên. Đang tải lại...', 'warning');
             setTimeout(() => window.location.reload(), 1500);
         });
+
+        // 14. Seamless Reconnection Reconciliation
+        this.realtimeClient.onReconnected = async () => {
+            await this.reconcileWorld();
+        };
+    }
+
+    async reconcileWorld() {
+        try {
+            const res = await this.apiClient.fetchWorld();
+            if (!res.ok || !res.data) return;
+
+            const snapshot = res.data;
+
+            // 1. Reconcile population
+            this.ui.hud.setWorldPopulation(snapshot.world_population ?? this.citizens.length);
+
+            // 2. Reconcile online gods
+            this.godManager.syncOnlineGods(snapshot.online_gods || [], this.currentGod?.id);
+            this.ui.hud.updateOnlineGods(this.godManager.onlineGodsList);
+
+            // 3. Reconcile citizens
+            const snapshotCitizens = snapshot.citizens || [];
+
+            for (const citData of snapshotCitizens) {
+                let existing = this.citizens.find((c) => c.id === citData.id);
+                if (!existing) {
+                    const island = this.islands.find((i) => i.id === citData.island_id) || this.islands[0];
+                    existing = this.spawnCitizen(citData, island);
+                } else {
+                    existing.status = citData.status;
+                    if (citData.status === 'held') {
+                        existing.setHoldingGod(citData.held_by_god_id, citData.held_by_god_name, citData.held_by_god_color);
+                    } else {
+                        existing.clearHoldingGod();
+                    }
+                    if (citData.status === 'drowning' && citData.drowning_deadline_at) {
+                        this.drowningSystem.startDrowning(existing, citData.drowning_deadline_at, citData.drowning_version || 1);
+                    } else if (citData.status === 'alive') {
+                        this.drowningSystem.clearDrowning(existing.id);
+                    }
+                }
+            }
+
+            // Remove dead citizens
+            const activeSnapshotIds = new Set(snapshotCitizens.map((c) => c.id));
+            for (let i = this.citizens.length - 1; i >= 0; i--) {
+                const c = this.citizens[i];
+                if (!activeSnapshotIds.has(c.id)) {
+                    this.drowningSystem.confirmDeath(c.id);
+                    c.dispose();
+                    this.citizens.splice(i, 1);
+                }
+            }
+        } catch (e) {
+            console.warn('[ParadiseWorld] Reconcile error:', e.message);
+        }
     }
 
     populateWorld(data, god) {
@@ -486,9 +579,16 @@ export class ParadiseWorld {
             citizen.update(delta, elapsed, this.islands);
         });
 
-        // Send local God movement to network (throttled)
-        if (this.currentGod) {
-            this.realtimeClient.sendMove(this.camera.position, this.controls.target);
+        // Send local God presence position to network (floating presence point above camera target)
+        if (this.currentGod && this.controls?.target) {
+            this.realtimeClient.sendMove(
+                {
+                    x: this.controls.target.x,
+                    y: 8.0,
+                    z: this.controls.target.z,
+                },
+                this.controls.target
+            );
         }
 
         this.renderer.render(this.scene, this.camera);

@@ -79,7 +79,7 @@ class WorldSeeder extends Seeder
         $zeus = $seededGods['Zeus'];
         $athena = $seededGods['Athena'];
 
-        // 3. Define 10 archipelago islands
+        // 3. Define 10 archipelago islands (Cooperative shared world - no ownership)
         $islandsData = [
             [
                 'name' => 'Đảo Bình Minh',
@@ -89,8 +89,8 @@ class WorldSeeder extends Seeder
                 'radius' => 14.0,
                 'type' => 'capital',
                 'seed' => 101,
-                'governed_by_god_id' => $zeus->id,
-                'banner_name' => 'Thánh Địa Zeus',
+                'governed_by_god_id' => null,
+                'banner_name' => null,
             ],
             [
                 'name' => 'Đảo Cọ',
@@ -100,8 +100,8 @@ class WorldSeeder extends Seeder
                 'radius' => 10.5,
                 'type' => 'palms',
                 'seed' => 102,
-                'governed_by_god_id' => $athena->id,
-                'banner_name' => 'Lãnh Địa Athena',
+                'governed_by_god_id' => null,
+                'banner_name' => null,
             ],
             [
                 'name' => 'Đảo Hải Đăng',
@@ -230,7 +230,9 @@ class WorldSeeder extends Seeder
 
         foreach ($citizensData as $c) {
             $island = $islands[$c['island']] ?? null;
-            if (! $island) continue;
+            if (! $island) {
+                continue;
+            }
 
             Citizen::updateOrCreate(
                 [

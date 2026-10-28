@@ -6,7 +6,6 @@ use App\Models\Citizen;
 use App\Models\God;
 use App\Models\Island;
 use App\Models\Rescue;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class MultiplayerWorldTest extends TestCase
@@ -36,8 +35,6 @@ class MultiplayerWorldTest extends TestCase
                     'world_z',
                     'radius',
                     'population',
-                    'governed_by_god_id',
-                    'banner_name',
                 ],
             ],
             'citizens' => [
@@ -71,7 +68,7 @@ class MultiplayerWorldTest extends TestCase
         $this->assertDatabaseHas('gods', ['name' => 'Poseidon', 'god_color' => '#06b6d4']);
     }
 
-    public function test_throw_enforces_creator_ownership(): void
+    public function test_shared_control_any_god_can_throw_citizen(): void
     {
         $zeus = God::where('name', 'Zeus')->first();
         $athena = God::where('name', 'Athena')->first();
@@ -79,25 +76,60 @@ class MultiplayerWorldTest extends TestCase
         // Citizen created by Zeus
         $citizen = Citizen::where('created_by_god_id', $zeus->id)->first();
 
-        // Athena tries to throw Zeus's citizen -> 403 Forbidden!
+        // Athena throws Zeus's citizen in cooperative shared world -> 200 OK!
         $response = $this->withHeader('X-God-UUID', $athena->uuid)
-            ->postJson("/api/citizens/{$citizen->id}/throw", [
-                'start_position' => ['x' => 0, 'y' => 5, 'z' => 0],
-                'velocity' => ['x' => 10, 'y' => 10, 'z' => 10],
-            ]);
-
-        $response->assertStatus(403);
-        $response->assertJsonPath('status', 'error');
-
-        // Zeus throws his own citizen -> 200 OK!
-        $successResponse = $this->withHeader('X-God-UUID', $zeus->uuid)
             ->postJson("/api/citizens/{$citizen->id}/throw", [
                 'start_position' => ['x' => 0, 'y' => 5, 'z' => 0],
                 'velocity' => ['x' => 1, 'y' => 5, 'z' => 1],
             ]);
 
-        $successResponse->assertStatus(200);
-        $this->assertContains($successResponse->json('outcome'), ['landed_island', 'landed_ocean']);
+        $response->assertStatus(200);
+        $this->assertContains($response->json('outcome'), ['landed_island', 'landed_ocean']);
+
+        $citizen->refresh();
+        $this->assertEquals($athena->id, $citizen->thrown_by_god_id);
+    }
+
+    public function test_grab_concurrent_grab_and_release(): void
+    {
+        $zeus = God::where('name', 'Zeus')->first();
+        $athena = God::where('name', 'Athena')->first();
+        $citizen = Citizen::first();
+
+        // 1. Zeus grabs citizen
+        $grabRes = $this->withHeader('X-God-UUID', $zeus->uuid)
+            ->postJson("/api/citizens/{$citizen->id}/grab");
+
+        $grabRes->assertStatus(200);
+        $grabRes->assertJsonPath('status', 'ok');
+
+        $citizen->refresh();
+        $this->assertEquals('held', $citizen->status);
+        $this->assertEquals($zeus->id, $citizen->held_by_god_id);
+
+        // 2. Athena attempts concurrent grab while Zeus holds -> 409 Conflict
+        $conflictRes = $this->withHeader('X-God-UUID', $athena->uuid)
+            ->postJson("/api/citizens/{$citizen->id}/grab");
+
+        $conflictRes->assertStatus(409);
+        $conflictRes->assertJsonPath('status', 'already_held');
+
+        // 3. Zeus releases citizen
+        $releaseRes = $this->withHeader('X-God-UUID', $zeus->uuid)
+            ->postJson("/api/citizens/{$citizen->id}/release");
+
+        $releaseRes->assertStatus(200);
+        $citizen->refresh();
+        $this->assertEquals('alive', $citizen->status);
+        $this->assertNull($citizen->held_by_god_id);
+
+        // 4. Athena can now grab successfully
+        $athenaGrab = $this->withHeader('X-God-UUID', $athena->uuid)
+            ->postJson("/api/citizens/{$citizen->id}/grab");
+
+        $athenaGrab->assertStatus(200);
+        $citizen->refresh();
+        $this->assertEquals($athena->id, $citizen->held_by_god_id);
     }
 
     public function test_authoritative_throw_into_ocean_starts_drowning(): void
@@ -175,43 +207,24 @@ class MultiplayerWorldTest extends TestCase
         $secondRescue->assertJsonPath('status', 'already_rescued');
     }
 
-    public function test_island_governance_rules(): void
+    public function test_island_rename_has_no_ownership_barriers(): void
     {
         $zeus = God::where('name', 'Zeus')->first();
-        $ares = God::where('name', 'Ares')->first();
+        $athena = God::where('name', 'Athena')->first();
+        $island = Island::first();
 
-        // Island 3 (Đảo Hải Đăng) is seeded as unclaimed
-        $island = Island::where('slug', 'dao-hai-dang')->first();
-        $this->assertNull($island->governed_by_god_id);
+        // Zeus renames island -> 200 OK
+        $zeusRename = $this->withHeader('X-God-UUID', $zeus->uuid)
+            ->patchJson("/api/islands/{$island->id}", ['name' => 'Đảo Ánh Dương']);
 
-        // Ares claims unclaimed island -> 200 OK
-        $claimResponse = $this->withHeader('X-God-UUID', $ares->uuid)
-            ->postJson("/api/islands/{$island->id}/claim");
+        $zeusRename->assertStatus(200);
+        $this->assertEquals('Đảo Ánh Dương', $island->fresh()->name);
 
-        $claimResponse->assertStatus(200);
-        $claimResponse->assertJsonPath('status', 'ok');
+        // Athena also renames the same island -> 200 OK (no ownership barrier!)
+        $athenaRename = $this->withHeader('X-God-UUID', $athena->uuid)
+            ->patchJson("/api/islands/{$island->id}", ['name' => 'Đảo Trí Tuệ']);
 
-        $island->refresh();
-        $this->assertEquals($ares->id, $island->governed_by_god_id);
-
-        // Zeus attempts to claim island already governed by Ares -> 409 Conflict!
-        $conflictClaim = $this->withHeader('X-God-UUID', $zeus->uuid)
-            ->postJson("/api/islands/{$island->id}/claim");
-
-        $conflictClaim->assertStatus(409);
-
-        // Zeus attempts to rename Ares's island -> 403 Forbidden!
-        $forbiddenRename = $this->withHeader('X-God-UUID', $zeus->uuid)
-            ->patchJson("/api/islands/{$island->id}", ['name' => 'Đảo của Zeus']);
-
-        $forbiddenRename->assertStatus(403);
-
-        // Ares renames his own island -> 200 OK!
-        $successRename = $this->withHeader('X-God-UUID', $ares->uuid)
-            ->patchJson("/api/islands/{$island->id}", ['name' => 'Thành Trì Ares']);
-
-        $successRename->assertStatus(200);
-        $island->refresh();
-        $this->assertEquals('Thành Trì Ares', $island->name);
+        $athenaRename->assertStatus(200);
+        $this->assertEquals('Đảo Trí Tuệ', $island->fresh()->name);
     }
 }

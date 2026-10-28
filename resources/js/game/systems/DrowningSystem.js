@@ -74,16 +74,21 @@ export class DrowningSystem {
                 entry.beacon.update(delta);
             }
 
-            // Client-side expiration check
+            // Client-side expiration check (authoritative confirmation via backend)
             if (now >= entry.deadlineAt && !entry.isFinalizing) {
                 entry.isFinalizing = true;
                 this.apiClient.request(`/api/citizens/${id}/drown`, { method: 'POST' }).then((res) => {
-                    this.confirmDeath(id);
-                    if (res.ok && res.data?.world_population !== undefined && this.onWorldPopulationUpdated) {
-                        this.onWorldPopulationUpdated(res.data.world_population);
+                    if (res.ok && res.data?.status === 'ok') {
+                        this.confirmDeath(id);
+                        if (res.data?.world_population !== undefined && this.onWorldPopulationUpdated) {
+                            this.onWorldPopulationUpdated(res.data.world_population);
+                        }
+                    } else {
+                        // Citizen was rescued or is no longer drowning
+                        this.clearDrowning(id);
                     }
                 }).catch(() => {
-                    this.confirmDeath(id);
+                    this.clearDrowning(id);
                 });
             }
         }
@@ -107,15 +112,18 @@ export class DrowningSystem {
         }
     }
 
-    handleRescueSuccess(citizenId, data) {
+    handleRescueSuccess(citizenId, data, citizenObject = null) {
         const entry = this.drowningCitizens.get(citizenId);
-        const citizen = entry ? entry.citizen : null;
+        const citizen = citizenObject || (entry ? entry.citizen : null);
 
         this.clearDrowning(citizenId);
 
         if (citizen) {
             citizen.status = 'alive';
             citizen.state = 'idle';
+            if (typeof citizen.clearHoldingGod === 'function') {
+                citizen.clearHoldingGod();
+            }
 
             const safePos = data.safe_position || { x: 0, y: 0, z: 0 };
 

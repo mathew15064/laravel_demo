@@ -22,10 +22,18 @@ export default defineConfig({
             use: { ...devices['Desktop Chrome'] },
         },
     ],
-    webServer: {
-        command: 'php artisan serve --host=127.0.0.1 --port=8008',
-        url: 'http://127.0.0.1:8008/health',
-        reuseExistingServer: !process.env.CI,
-        timeout: 15000,
-    },
+    webServer: [
+        {
+            command: 'php artisan serve --host=127.0.0.1 --port=8008',
+            url: 'http://127.0.0.1:8008/health',
+            reuseExistingServer: !process.env.CI,
+            timeout: 15000,
+        },
+        {
+            command: 'node server/realtime-server.js',
+            port: 8089,
+            reuseExistingServer: !process.env.CI,
+            timeout: 15000,
+        },
+    ],
 });

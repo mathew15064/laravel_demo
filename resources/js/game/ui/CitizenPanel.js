@@ -1,6 +1,7 @@
 /**
  * Paradise Gods - Selected Citizen Context Panel
- * Enforces God ownership rules: Only creator can throw/rename, but ANY God can rescue!
+ * Cooperative shared world: Any God can lift, throw, rename, and rescue citizens.
+ * Displays history/attribution without restricting gameplay rights.
  */
 export class CitizenPanel {
     constructor(container, apiClient, onLiftCitizen, onCitizenRenamed, onRescueCitizen = null) {
@@ -20,14 +21,22 @@ export class CitizenPanel {
     show(citizen) {
         this.currentCitizen = citizen;
         const isDrowning = citizen.status === 'drowning';
-        const statusLabel = isDrowning ? '⚠ Đang chết đuối!' : 'Đang sống';
-        const statusColor = isDrowning ? 'text-rose-400 font-bold animate-pulse' : 'text-emerald-400';
+        const isHeld = citizen.status === 'held' || citizen.isDragged;
+        let statusLabel = 'Đang bình an';
+        let statusColor = 'text-emerald-400';
 
-        const creatorId = citizen.createdByGodId || citizen.data?.created_by_god_id;
+        if (isDrowning) {
+            statusLabel = '⚠ Đang chết đuối!';
+            statusColor = 'text-rose-400 font-bold animate-pulse';
+        } else if (isHeld) {
+            statusLabel = '✋ Đang được nâng lên';
+            statusColor = 'text-amber-300 font-semibold';
+        }
+
         const creatorName = citizen.creatorName || citizen.data?.creator_name || 'Vô danh';
         const creatorColor = citizen.creatorColor || citizen.data?.creator_color || '#8b5cf6';
-
-        const isOwner = this.currentGod && (creatorId === this.currentGod.id || creatorId === this.currentGod.god_id);
+        const heldByName = citizen.heldByName || citizen.data?.held_by_god_name;
+        const saviorName = citizen.saviorName || citizen.data?.last_rescued_by_god_name;
 
         this.container.innerHTML = `
             <div class="pointer-events-auto p-5 rounded-3xl bg-slate-900/90 border border-slate-700/80 shadow-2xl backdrop-blur-xl text-white space-y-4 w-72 animate-fade-in relative">
@@ -37,7 +46,7 @@ export class CitizenPanel {
                 </button>
 
                 <div>
-                    <span class="text-[10px] font-mono tracking-widest text-cyan-400 uppercase">CƯ DÂN</span>
+                    <span class="text-[10px] font-mono tracking-widest text-cyan-400 uppercase">SINH LINH THẾ GIỚI</span>
                     <h3 id="citizen-panel-name" class="text-lg font-bold text-white mt-0.5">${citizen.name}</h3>
                 </div>
 
@@ -48,8 +57,8 @@ export class CitizenPanel {
                     </div>
 
                     <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex justify-between items-center">
-                        <span class="text-slate-400 font-mono">Đảo:</span>
-                        <span class="font-medium text-slate-200">${citizen.islandName || 'Đại dương'}</span>
+                        <span class="text-slate-400 font-mono">Vị trí:</span>
+                        <span class="font-medium text-slate-200">${citizen.islandName || (isDrowning ? 'Biển sâu' : 'Không trung')}</span>
                     </div>
 
                     <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex justify-between items-center">
@@ -59,6 +68,20 @@ export class CitizenPanel {
                             <span class="font-medium" style="color: ${creatorColor}">Thần ${creatorName}</span>
                         </div>
                     </div>
+
+                    ${heldByName ? `
+                        <div class="p-2.5 rounded-xl bg-slate-950/80 border border-amber-500/40 flex justify-between items-center">
+                            <span class="text-slate-400 font-mono">Đang giữ bởi:</span>
+                            <span class="font-bold text-amber-300">Thần ${heldByName}</span>
+                        </div>
+                    ` : ''}
+
+                    ${saviorName ? `
+                        <div class="p-2.5 rounded-xl bg-slate-950/80 border border-emerald-500/40 flex justify-between items-center">
+                            <span class="text-slate-400 font-mono">Từng được cứu bởi:</span>
+                            <span class="font-medium text-emerald-300">Thần ${saviorName}</span>
+                        </div>
+                    ` : ''}
 
                     <!-- Appearance Preview Swatches -->
                     <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex justify-between items-center">
@@ -70,7 +93,7 @@ export class CitizenPanel {
                     </div>
                 </div>
 
-                <!-- Action Buttons based on ownership & status -->
+                <!-- Action Buttons: Accessible to ALL Gods -->
                 <div class="space-y-2 pt-1">
                     ${isDrowning ? `
                         <!-- Any god can rescue a drowning citizen! -->
@@ -81,37 +104,27 @@ export class CitizenPanel {
                         </button>
                     ` : ''}
 
-                    ${isOwner ? `
-                        <button type="button" id="citizen-lift-btn"
-                                class="w-full py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 shadow-md shadow-cyan-500/20 transition-all flex items-center justify-center gap-1.5">
-                            <span>✋</span>
-                            <span>NHẤC LÊN / NÉM</span>
-                        </button>
+                    <button type="button" id="citizen-lift-btn"
+                            class="w-full py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 shadow-md shadow-cyan-500/20 transition-all flex items-center justify-center gap-1.5">
+                        <span>✋</span>
+                        <span>NHẤC LÊN / NÉM</span>
+                    </button>
 
-                        <button type="button" id="citizen-rename-btn"
-                                class="w-full py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-cyan-300 transition-all">
-                            Đổi tên cư dân
-                        </button>
-                    ` : `
-                        ${!isDrowning ? `
-                            <div class="p-2 rounded-xl bg-slate-800/40 text-center text-[11px] text-slate-400 italic">
-                                Chỉ Thần ${creatorName} mới có quyền ném hoặc đổi tên.
-                            </div>
-                        ` : ''}
-                    `}
+                    <button type="button" id="citizen-rename-btn"
+                            class="w-full py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-cyan-300 transition-all">
+                        Đổi tên cư dân
+                    </button>
                 </div>
 
                 <!-- Inline Rename Form -->
-                ${isOwner ? `
-                    <form id="citizen-rename-form" class="hidden pt-2 border-t border-slate-800 space-y-2">
-                        <input type="text" id="citizen-rename-input" required minlength="1" maxlength="40" value="${citizen.name}"
-                               class="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-400">
-                        <div class="flex gap-2">
-                            <button type="submit" class="flex-1 py-1 rounded-lg bg-cyan-500 text-slate-950 text-xs font-bold">LƯU</button>
-                            <button type="button" id="citizen-rename-cancel-btn" class="flex-1 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs">HỦY</button>
-                        </div>
-                    </form>
-                ` : ''}
+                <form id="citizen-rename-form" class="hidden pt-2 border-t border-slate-800 space-y-2">
+                    <input type="text" id="citizen-rename-input" required minlength="1" maxlength="40" value="${citizen.name}"
+                           class="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-400">
+                    <div class="flex gap-2">
+                        <button type="submit" class="flex-1 py-1 rounded-lg bg-cyan-500 text-slate-950 text-xs font-bold">LƯU</button>
+                        <button type="button" id="citizen-rename-cancel-btn" class="flex-1 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs">HỦY</button>
+                    </div>
+                </form>
             </div>
         `;
 

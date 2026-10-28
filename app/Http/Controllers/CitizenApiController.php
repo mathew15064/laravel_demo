@@ -73,10 +73,13 @@ class CitizenApiController extends Controller
             ],
         ];
 
+        $worldPop = Citizen::whereIn('status', ['alive', 'drowning', 'held'])->count();
+
         WorldEventBroadcaster::broadcast('citizen.created', $god->id, $citizen->id, [
             'citizen' => $citizenData,
             'island_id' => $island->id,
             'island_name' => $island->name,
+            'world_population' => $worldPop,
             'message' => "✨ {$god->name} đã ban sự sống cho {$citizen->name} trên {$island->name}.",
         ]);
 
@@ -84,14 +87,14 @@ class CitizenApiController extends Controller
             'status' => 'ok',
             'citizen' => $citizenData,
             'island_population' => $island->fresh()->population,
-            'world_population' => Citizen::whereIn('status', ['alive', 'drowning'])->count(),
+            'world_population' => $worldPop,
             'god_stats' => $god->fresh()->stats,
             'message' => "{$god->name} đã ban sự sống cho {$citizen->name} trên {$island->name}.",
         ], 201);
     }
 
     /**
-     * Rename citizen. Creator only.
+     * Rename citizen. Available to any God in cooperative shared world.
      */
     public function update(Request $request, Citizen $citizen): JsonResponse
     {
@@ -103,22 +106,18 @@ class CitizenApiController extends Controller
         $callerUuid = $request->header('X-God-UUID') ?? $validated['god_uuid'] ?? null;
         $callerGod = $callerUuid ? God::where('uuid', $callerUuid)->first() : null;
 
-        if ($callerGod && $citizen->created_by_god_id !== $callerGod->id) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Chỉ vị thần tạo ra mới có quyền đổi tên cư dân này!',
-            ], 403);
-        }
-
         $oldName = $citizen->name;
         $citizen->update([
             'name' => trim($validated['name']),
+            'version' => ($citizen->version ?? 1) + 1,
         ]);
 
         WorldEventBroadcaster::broadcast('citizen.renamed', $callerGod?->id, $citizen->id, [
             'citizen_id' => $citizen->id,
             'old_name' => $oldName,
             'name' => $citizen->name,
+            'actor_god_name' => $callerGod?->name,
+            'version' => $citizen->version,
         ]);
 
         return response()->json([
@@ -126,6 +125,127 @@ class CitizenApiController extends Controller
             'citizen' => $citizen->fresh(),
             'message' => "Đã đổi tên cư dân thành {$citizen->name}.",
         ]);
+    }
+
+    /**
+     * Authoritative grab / pick-up of a citizen.
+     */
+    public function grab(Request $request, Citizen $citizen): JsonResponse
+    {
+        $validated = $request->validate([
+            'god_uuid' => ['nullable', 'string'],
+        ]);
+
+        $callerUuid = $request->header('X-God-UUID') ?? $validated['god_uuid'] ?? null;
+        $callerGod = $callerUuid ? God::where('uuid', $callerUuid)->first() : null;
+        if (! $callerGod) {
+            $callerGod = God::first() ?? God::create(['name' => 'Thần Vô Danh', 'god_color' => '#8b5cf6']);
+        }
+
+        return DB::transaction(function () use ($citizen, $callerGod) {
+            /** @var Citizen $c */
+            $c = Citizen::lockForUpdate()->find($citizen->id);
+            if (! $c) {
+                return response()->json(['status' => 'error', 'message' => 'Cư dân không tồn tại.'], 404);
+            }
+
+            if ($c->status === 'dead') {
+                return response()->json(['status' => 'error', 'message' => 'Cư dân đã qua đời.'], 400);
+            }
+
+            // Concurrent grab race condition check:
+            if ($c->status === 'held' && $c->held_by_god_id && $c->held_by_god_id !== $callerGod->id) {
+                $holdingGod = God::find($c->held_by_god_id);
+
+                return response()->json([
+                    'status' => 'already_held',
+                    'held_by_god_id' => $c->held_by_god_id,
+                    'held_by_god_name' => $holdingGod?->name ?? 'Một vị thần',
+                    'message' => 'Cư dân đang được một vị thần khác giữ.',
+                ], 409);
+            }
+
+            $c->status = 'held';
+            $c->held_by_god_id = $callerGod->id;
+            $c->version = ($c->version ?? 1) + 1;
+            $c->save();
+
+            WorldEventBroadcaster::broadcast('citizen.grabbed', $callerGod->id, $c->id, [
+                'citizen_id' => $c->id,
+                'citizen_name' => $c->name,
+                'god_id' => $callerGod->id,
+                'god_name' => $callerGod->name,
+                'god_color' => $callerGod->god_color,
+                'version' => $c->version,
+                'message' => "✋ Thần {$callerGod->name} đang nhấc {$c->name} lên không trung.",
+            ]);
+
+            return response()->json([
+                'status' => 'ok',
+                'citizen' => $c->fresh(),
+                'god' => [
+                    'id' => $callerGod->id,
+                    'name' => $callerGod->name,
+                    'god_color' => $callerGod->god_color,
+                ],
+            ]);
+        });
+    }
+
+    /**
+     * Authoritative release / drop of a citizen.
+     */
+    public function release(Request $request, Citizen $citizen): JsonResponse
+    {
+        $validated = $request->validate([
+            'god_uuid' => ['nullable', 'string'],
+            'position' => ['nullable', 'array'],
+            'position.x' => ['nullable', 'numeric'],
+            'position.y' => ['nullable', 'numeric'],
+            'position.z' => ['nullable', 'numeric'],
+            'island_id' => ['nullable', 'exists:islands,id'],
+        ]);
+
+        $callerUuid = $request->header('X-God-UUID') ?? $validated['god_uuid'] ?? null;
+        $callerGod = $callerUuid ? God::where('uuid', $callerUuid)->first() : null;
+
+        return DB::transaction(function () use ($citizen, $callerGod, $validated) {
+            /** @var Citizen $c */
+            $c = Citizen::lockForUpdate()->find($citizen->id);
+            if (! $c) {
+                return response()->json(['status' => 'error', 'message' => 'Cư dân không tồn tại.'], 404);
+            }
+
+            $c->status = 'alive';
+            $c->held_by_god_id = null;
+            if (isset($validated['position']['x'])) {
+                $c->position_x = (float) $validated['position']['x'];
+                $c->position_y = (float) ($validated['position']['y'] ?? 0.0);
+                $c->position_z = (float) $validated['position']['z'];
+            }
+            if (! empty($validated['island_id'])) {
+                $c->island_id = $validated['island_id'];
+                $c->last_island_id = $validated['island_id'];
+            }
+            $c->version = ($c->version ?? 1) + 1;
+            $c->save();
+
+            WorldEventBroadcaster::broadcast('citizen.released', $callerGod?->id, $c->id, [
+                'citizen_id' => $c->id,
+                'position' => [
+                    'x' => $c->position_x,
+                    'y' => $c->position_y,
+                    'z' => $c->position_z,
+                ],
+                'island_id' => $c->island_id,
+                'version' => $c->version,
+            ]);
+
+            return response()->json([
+                'status' => 'ok',
+                'citizen' => $c->fresh(),
+            ]);
+        });
     }
 
     /**
@@ -160,7 +280,7 @@ class CitizenApiController extends Controller
             'citizen' => $citizen->fresh()->load('island:id,name'),
             'old_island_population' => $oldIsland ? $oldIsland->population : null,
             'new_island_population' => $targetIsland->population,
-            'world_population' => Citizen::whereIn('status', ['alive', 'drowning'])->count(),
+            'world_population' => Citizen::whereIn('status', ['alive', 'drowning', 'held'])->count(),
             'message' => "{$citizen->name} đã chuyển sang {$targetIsland->name}.",
         ]);
     }
@@ -169,13 +289,14 @@ class CitizenApiController extends Controller
      * Citizen fell into water and is now drowning.
      * Population remains unchanged per requirement 12 & 29.
      */
-    public function drowning(Citizen $citizen): JsonResponse
+    public function drowning(Request $request, Citizen $citizen): JsonResponse
     {
+        $timeoutMs = (int) ($request->input('timeout_ms') ?? env('DROWNING_TIMEOUT_MS', 3000));
         $nowMs = (int) round(microtime(true) * 1000);
         $citizen->update([
             'status' => 'drowning',
             'drowning_started_at' => $nowMs,
-            'drowning_deadline_at' => $nowMs + 10000,
+            'drowning_deadline_at' => $nowMs + $timeoutMs,
         ]);
 
         return response()->json([
@@ -205,16 +326,8 @@ class CitizenApiController extends Controller
         $callerUuid = $request->header('X-God-UUID') ?? $validated['god_uuid'] ?? null;
         $callerGod = $callerUuid ? God::where('uuid', $callerUuid)->first() : null;
 
-        // Check ownership: only creator can throw citizen
-        if ($callerGod && $citizen->created_by_god_id !== $callerGod->id) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Chỉ vị thần tạo ra mới có quyền ném cư dân này!',
-            ], 403);
-        }
-
         if (! $callerGod) {
-            $callerGod = God::find($citizen->created_by_god_id) ?? God::first();
+            $callerGod = God::find($citizen->created_by_god_id) ?? God::first() ?? God::create(['name' => 'Thần Vô Danh', 'god_color' => '#8b5cf6']);
         }
 
         $x0 = (float) $validated['start_position']['x'];
@@ -260,16 +373,19 @@ class CitizenApiController extends Controller
                 'position_x' => $landX,
                 'position_y' => 0.0,
                 'position_z' => $landZ,
+                'held_by_god_id' => null,
                 'thrown_by_god_id' => $callerGod->id,
                 'drowning_started_at' => null,
                 'drowning_deadline_at' => null,
+                'version' => ($citizen->version ?? 1) + 1,
             ]);
 
             $outcome = 'landed_island';
             $message = "🎯 {$callerGod->name} đã ném {$citizen->name} hạ cánh an toàn xuống {$targetIsland->name}!";
         } else {
             // Landed into ocean -> DROWNING!
-            $drowningDeadline = $nowMs + 10000; // 10 seconds authoritative window
+            $timeoutMs = (int) env('DROWNING_TIMEOUT_MS', 3000);
+            $drowningDeadline = $nowMs + (int) round($flightTime * 1000) + $timeoutMs;
             $newDrowningVersion = $citizen->drowning_version + 1;
 
             $citizen->update([
@@ -279,10 +395,12 @@ class CitizenApiController extends Controller
                 'position_x' => $landX,
                 'position_y' => -0.2,
                 'position_z' => $landZ,
+                'held_by_god_id' => null,
                 'thrown_by_god_id' => $callerGod->id,
                 'drowning_started_at' => $nowMs,
                 'drowning_deadline_at' => $drowningDeadline,
                 'drowning_version' => $newDrowningVersion,
+                'version' => ($citizen->version ?? 1) + 1,
             ]);
 
             $outcome = 'landed_ocean';
@@ -413,8 +531,10 @@ class CitizenApiController extends Controller
                 'position_y' => 0.0,
                 'position_z' => $safeZ,
                 'last_rescued_by_god_id' => $callerGod->id,
+                'held_by_god_id' => null,
                 'drowning_started_at' => null,
                 'drowning_deadline_at' => null,
+                'version' => ($c->version ?? 1) + 1,
             ]);
 
             // Increment savior stats
@@ -484,16 +604,16 @@ class CitizenApiController extends Controller
                 return response()->json([
                     'status' => 'not_drowning',
                     'citizen' => $c,
-                    'message' => "Cư dân hiện không ở trạng thái chết đuối.",
+                    'message' => 'Cư dân hiện không ở trạng thái chết đuối.',
                 ]);
             }
 
-            // Only drown if deadline has actually passed (or force called)
-            if ($c->drowning_deadline_at && $nowMs < $c->drowning_deadline_at) {
+            // Only drown if deadline has actually passed (or force called with 150ms latency tolerance)
+            if ($c->drowning_deadline_at && $nowMs < ($c->drowning_deadline_at - 150)) {
                 return response()->json([
                     'status' => 'still_drowning',
                     'remaining_ms' => $c->drowning_deadline_at - $nowMs,
-                    'message' => "Thời gian chết đuối chưa hết.",
+                    'message' => 'Thời gian chết đuối chưa hết.',
                 ], 422);
             }
 
@@ -519,7 +639,7 @@ class CitizenApiController extends Controller
             return response()->json([
                 'status' => 'ok',
                 'citizen' => $c->fresh(),
-                'world_population' => Citizen::whereIn('status', ['alive', 'drowning'])->count(),
+                'world_population' => Citizen::whereIn('status', ['alive', 'drowning', 'held'])->count(),
                 'message' => "{$c->name} đã chìm vào giấc ngủ vĩnh hằng dưới đáy biển.",
             ]);
         });

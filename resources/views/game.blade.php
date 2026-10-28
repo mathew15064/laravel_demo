@@ -16,9 +16,10 @@
     <!-- 1. Fullscreen 3D WebGL Canvas Mounting Point -->
     <div id="game-canvas-container" class="absolute inset-0 w-full h-full z-0"></div>
 
-    <!-- 2. Disconnect / Reconnect Banner -->
-    <div id="reconnect-banner" class="fixed top-0 left-0 right-0 z-40 bg-amber-500/90 text-slate-950 font-bold text-center py-2 px-4 shadow-lg backdrop-blur-md hidden transition-all">
-        ⚠ KẾT NỐI BỊ GIÁN ĐOẠN — ĐANG KẾT NỐI LẠI VỚI THIÊN ĐƯỜNG...
+    <!-- 2. Subtle Non-intrusive Reconnection Indicator (hidden during transient reconnects < 3s) -->
+    <div id="reconnect-indicator" class="fixed top-4 right-4 z-40 pointer-events-none px-3.5 py-1.5 rounded-full bg-slate-900/85 border border-amber-500/40 text-amber-400 text-xs font-mono shadow-xl backdrop-blur-md hidden transition-opacity flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+        <span>● Đang kết nối lại...</span>
     </div>
 
     <!-- 3. Top-Left Minimal In-Game HUD & Presence List -->

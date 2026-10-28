@@ -27,8 +27,14 @@ const redisSub = new Redis({
 
 const wss = new WebSocketServer({ port: PORT });
 
+// Clean up stale presence on server boot
+redisCmd.del('paradise:online_gods').catch(() => {});
+
 // Active connection tracking: ws -> god metadata
 const clients = new Map();
+
+// Grace period timers for transient disconnects (10 seconds)
+const disconnectGraceTimers = new Map(); // god_id -> { timer, name }
 
 // Helper to broadcast to all connected WebSocket clients
 function broadcastToAll(payload, excludeWs = null) {
@@ -105,6 +111,19 @@ wss.on('connection', (ws, req) => {
                     const { god_id, uuid, name, god_color } = msg;
                     if (!god_id) return;
 
+                    // If God reconnected during grace period, cancel grace timer
+                    if (disconnectGraceTimers.has(god_id)) {
+                        console.log(`[Paradise-WS] God ${name} reconnected within grace period. Preserving session.`);
+                        clearTimeout(disconnectGraceTimers.get(god_id).timer);
+                        disconnectGraceTimers.delete(god_id);
+                    }
+
+                    // Count active sockets for this god before registering current
+                    let activeBefore = 0;
+                    for (const meta of clients.values()) {
+                        if (meta.god_id === god_id) activeBefore++;
+                    }
+
                     clients.set(ws, { god_id, uuid, name, god_color });
 
                     // Register presence in Redis
@@ -116,16 +135,46 @@ wss.on('connection', (ws, req) => {
                         3600
                     );
 
-                    console.log(`[Paradise-WS] God joined: ${name} (ID: ${god_id}, Color: ${god_color})`);
+                    // Always broadcast join if this is the first active connection for this god
+                    if (activeBefore === 0) {
+                        console.log(`[Paradise-WS] God joined: ${name} (ID: ${god_id}, Color: ${god_color})`);
+                        await publishWorldEvent('god.joined', god_id, god_id, {
+                            god_id,
+                            uuid,
+                            name,
+                            god_color,
+                            message: `✨ Một luồng ánh sáng xuất hiện trên bầu trời. Vị thần ${name} đã giáng thế!`,
+                        });
+                    }
 
-                    // Publish join event
-                    await publishWorldEvent('god.joined', god_id, god_id, {
-                        god_id,
-                        uuid,
-                        name,
-                        god_color,
-                        message: `✨ Một luồng ánh sáng xuất hiện trên bầu trời. Vị thần ${name} đã giáng thế!`,
-                    });
+                    // Send current authoritative online gods list directly to this newly joined client
+                    const onlineList = [];
+                    const seenGodIds = new Set();
+                    for (const meta of clients.values()) {
+                        if (meta.god_id && !seenGodIds.has(meta.god_id)) {
+                            seenGodIds.add(meta.god_id);
+                            onlineList.push(meta);
+                        }
+                    }
+                    try {
+                        ws.send(JSON.stringify({
+                            event_type: 'presence.sync',
+                            payload: {
+                                online_gods: onlineList,
+                            },
+                        }));
+                    } catch (e) {
+                        console.error('[Paradise-WS] Failed to send presence.sync:', e.message);
+                    }
+                    break;
+                }
+
+                case 'god.heartbeat': {
+                    const clientData = clients.get(ws);
+                    if (clientData && clientData.god_id) {
+                        await redisCmd.expire(`paradise:presence:${clientData.god_id}`, 3600);
+                        await redisCmd.expire(`paradise:pos:${clientData.god_id}`, 300);
+                    }
                     break;
                 }
 
@@ -157,6 +206,29 @@ wss.on('connection', (ws, req) => {
                             },
                         },
                         ws // exclude sender
+                    );
+                    break;
+                }
+
+                case 'citizen.drag': {
+                    const clientData = clients.get(ws);
+                    if (!clientData || !msg.citizen_id || !msg.position) return;
+
+                    // Broadcast citizen movement while held in air
+                    broadcastToAll(
+                        {
+                            event_type: 'citizen.moved',
+                            actor_god_id: clientData.god_id,
+                            payload: {
+                                citizen_id: msg.citizen_id,
+                                god_id: clientData.god_id,
+                                god_name: clientData.name,
+                                god_color: clientData.god_color,
+                                position: msg.position,
+                                version: msg.version || 1,
+                            },
+                        },
+                        ws // exclude dragging client
                     );
                     break;
                 }
@@ -216,21 +288,45 @@ wss.on('connection', (ws, req) => {
             }
         }
 
+        // If no other connections are active, start graceful disconnect period (10 seconds)
         if (!otherActive) {
-            console.log(`[Paradise-WS] God left: ${name} (ID: ${god_id})`);
-            try {
-                await redisCmd.srem('paradise:online_gods', String(god_id));
-                await redisCmd.del(`paradise:presence:${god_id}`);
-                await redisCmd.del(`paradise:pos:${god_id}`);
+            console.log(`[Paradise-WS] God ${name} disconnected. Starting 10s grace period before marking offline...`);
 
-                await publishWorldEvent('god.left', god_id, god_id, {
-                    god_id,
-                    name,
-                    message: `○ ${name} — vừa rời khỏi thiên đường.`,
-                });
-            } catch (err) {
-                console.error('[Paradise-WS] Error updating presence on disconnect:', err.message);
+            if (disconnectGraceTimers.has(god_id)) {
+                clearTimeout(disconnectGraceTimers.get(god_id).timer);
             }
+
+            const timer = setTimeout(async () => {
+                disconnectGraceTimers.delete(god_id);
+
+                // Double check if reconnected during timer
+                let reconnected = false;
+                for (const meta of clients.values()) {
+                    if (meta.god_id === god_id) {
+                        reconnected = true;
+                        break;
+                    }
+                }
+
+                if (!reconnected) {
+                    console.log(`[Paradise-WS] Grace period expired. God left: ${name} (ID: ${god_id})`);
+                    try {
+                        await redisCmd.srem('paradise:online_gods', String(god_id));
+                        await redisCmd.del(`paradise:presence:${god_id}`);
+                        await redisCmd.del(`paradise:pos:${god_id}`);
+
+                        await publishWorldEvent('god.left', god_id, god_id, {
+                            god_id,
+                            name,
+                            message: `○ ${name} — vừa rời khỏi thiên đường.`,
+                        });
+                    } catch (err) {
+                        console.error('[Paradise-WS] Error updating presence on disconnect:', err.message);
+                    }
+                }
+            }, 10000);
+
+            disconnectGraceTimers.set(god_id, { timer, name });
         }
     });
 
@@ -294,6 +390,10 @@ process.on('SIGTERM', () => {
     console.log('[Paradise-WS] SIGTERM received. Closing server...');
     clearInterval(heartbeatInterval);
     clearInterval(drowningTicker);
+    for (const { timer } of disconnectGraceTimers.values()) {
+        clearTimeout(timer);
+    }
+    disconnectGraceTimers.clear();
     wss.close();
     redisCmd.disconnect();
     redisSub.disconnect();

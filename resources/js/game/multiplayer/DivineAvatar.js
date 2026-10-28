@@ -119,7 +119,7 @@ export class DivineAvatar {
         if (!pos) return;
         this.targetPosition.set(
             pos.x,
-            Math.max(pos.y || 16, 12),
+            pos.y !== undefined ? pos.y : 8.0,
             pos.z
         );
     }

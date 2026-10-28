@@ -40,7 +40,7 @@ class Island extends Model
     {
         static::creating(function (Island $island) {
             if (empty($island->slug)) {
-                $island->slug = Str::slug($island->name) . '-' . Str::random(5);
+                $island->slug = Str::slug($island->name).'-'.Str::random(5);
             }
         });
     }
@@ -56,13 +56,13 @@ class Island extends Model
     }
 
     /**
-     * Population includes living & drowning citizens currently assigned to this island.
+     * Population includes living, drowning & held citizens currently assigned to this island.
      * Dead citizens are excluded.
      */
     public function getPopulationAttribute(): int
     {
         return $this->citizens()
-            ->whereIn('status', ['alive', 'drowning'])
+            ->whereIn('status', ['alive', 'drowning', 'held'])
             ->count();
     }
 }

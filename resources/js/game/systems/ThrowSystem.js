@@ -2,22 +2,23 @@ import * as THREE from 'three';
 
 /**
  * Paradise Gods - Citizen Pick Up & Throw System
- * Enforces ownership: Only the creator God can pick up and throw their citizen.
- * Computes trajectory and notifies backend & multiplayer network.
+ * Cooperative Shared World: Any God can pick up, lift, move, and throw any citizen.
+ * Features server-authoritative grab synchronization and real-time movement broadcast.
  */
 export class ThrowSystem {
-    constructor(camera, domElement, controls, citizenManager, apiClient = null) {
+    constructor(camera, domElement, controls, citizenManager, apiClient = null, realtimeClient = null) {
         this.camera = camera;
         this.domElement = domElement;
         this.controls = controls;
         this.citizenManager = citizenManager;
         this.apiClient = apiClient;
+        this.realtimeClient = realtimeClient;
 
         this.currentGod = null;
 
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
-        this.dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -4.0);
+        this.dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -5.5); // float 5.5 units above water
         this.dragIntersection = new THREE.Vector3();
 
         this.draggedCitizen = null;
@@ -32,6 +33,10 @@ export class ThrowSystem {
         this.currentGod = god;
     }
 
+    setRealtimeClient(client) {
+        this.realtimeClient = client;
+    }
+
     initEvents() {
         this.onPointerDown = this.handlePointerDown.bind(this);
         this.onPointerMove = this.handlePointerMove.bind(this);
@@ -42,7 +47,7 @@ export class ThrowSystem {
         window.addEventListener('pointerup', this.onPointerUp);
     }
 
-    handlePointerDown(e) {
+    async handlePointerDown(e) {
         if (e.button !== 0) return;
 
         const rect = this.domElement.getBoundingClientRect();
@@ -62,19 +67,31 @@ export class ThrowSystem {
 
             const citizen = hitObj.userData?.citizenInstance;
             if (citizen && citizen.status !== 'dead') {
-                // Ownership check: only creator God can pick up & throw!
-                const creatorId = citizen.createdByGodId || citizen.data?.created_by_god_id;
-                if (this.currentGod && creatorId && creatorId !== this.currentGod.id && creatorId !== this.currentGod.god_id) {
-                    if (this.onUnauthorizedThrow) {
-                        this.onUnauthorizedThrow(citizen);
+                // If already held by another god, do not grab
+                const currentGodId = this.currentGod?.id || this.currentGod?.god_id;
+                if (citizen.status === 'held' && citizen.heldByGodId && citizen.heldByGodId !== currentGodId) {
+                    return; // Softly ignore without intrusive popup
+                }
+
+                // Server-authoritative atomic grab
+                if (this.apiClient) {
+                    const res = await this.apiClient.request(`/api/citizens/${citizen.id}/grab`, {
+                        method: 'POST',
+                        body: JSON.stringify({ god_uuid: this.apiClient.getGodUuid() }),
+                    });
+
+                    if (!res.ok && res.status === 409) {
+                        // Another god won the race! Softly deselect.
+                        return;
                     }
-                    return;
                 }
 
                 this.draggedCitizen = citizen;
                 citizen.isDragged = true;
                 citizen.isThrown = false;
-                citizen.group.position.y = 4.2;
+                citizen.status = 'held';
+                citizen.heldByGodId = currentGodId;
+                citizen.group.position.y = 5.5;
                 this.controls.enabled = false;
 
                 this.previousPosition.copy(citizen.group.position);
@@ -113,10 +130,20 @@ export class ThrowSystem {
 
             this.draggedCitizen.group.position.x = this.dragIntersection.x;
             this.draggedCitizen.group.position.z = this.dragIntersection.z;
+            this.draggedCitizen.group.position.y = 5.5;
+
+            // Broadcast real-time citizen drag position to other online gods
+            if (this.realtimeClient) {
+                this.realtimeClient.sendCitizenDrag(
+                    this.draggedCitizen.id,
+                    this.draggedCitizen.group.position,
+                    this.draggedCitizen.data?.version || 1
+                );
+            }
         }
     }
 
-    handlePointerUp() {
+    async handlePointerUp() {
         if (!this.draggedCitizen) return;
 
         const citizen = this.draggedCitizen;
@@ -135,33 +162,57 @@ export class ThrowSystem {
                 Math.min(cappedSpeed * 0.5 + 4.0, 16.0),
                 dir.z * cappedSpeed
             );
-        }
 
-        citizen.velocity.copy(launchVelocity);
-        citizen.isThrown = true;
+            citizen.velocity.copy(launchVelocity);
+            citizen.isThrown = true;
+            citizen.status = 'alive';
+            citizen.heldByGodId = null;
 
-        // Authoritative throw API dispatch to backend
-        if (this.apiClient) {
-            this.apiClient.request(`/api/citizens/${citizen.id}/throw`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    god_uuid: this.apiClient.getGodUuid(),
-                    start_position: {
-                        x: citizen.group.position.x,
-                        y: citizen.group.position.y,
-                        z: citizen.group.position.z,
-                    },
-                    velocity: {
-                        x: launchVelocity.x,
-                        y: launchVelocity.y,
-                        z: launchVelocity.z,
-                    },
-                }),
-            });
-        }
+            // Authoritative throw API dispatch to backend
+            if (this.apiClient) {
+                await this.apiClient.request(`/api/citizens/${citizen.id}/throw`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        god_uuid: this.apiClient.getGodUuid(),
+                        start_position: {
+                            x: citizen.group.position.x,
+                            y: citizen.group.position.y,
+                            z: citizen.group.position.z,
+                        },
+                        velocity: {
+                            x: launchVelocity.x,
+                            y: launchVelocity.y,
+                            z: launchVelocity.z,
+                        },
+                    }),
+                });
+            }
 
-        if (this.onReleaseCallback) {
-            this.onReleaseCallback(citizen, speed > 4.0);
+            if (this.onReleaseCallback) {
+                this.onReleaseCallback(citizen, true);
+            }
+        } else {
+            // Gentle placement / release
+            citizen.status = 'alive';
+            citizen.heldByGodId = null;
+
+            if (this.apiClient) {
+                await this.apiClient.request(`/api/citizens/${citizen.id}/release`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        god_uuid: this.apiClient.getGodUuid(),
+                        position: {
+                            x: citizen.group.position.x,
+                            y: 2.0,
+                            z: citizen.group.position.z,
+                        },
+                    }),
+                });
+            }
+
+            if (this.onReleaseCallback) {
+                this.onReleaseCallback(citizen, false);
+            }
         }
     }
 

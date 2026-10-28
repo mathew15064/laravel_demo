@@ -30,6 +30,8 @@ Route::post('/islands/{island}/claim', [IslandApiController::class, 'claim'])->n
 // Citizen lifecycle API
 Route::post('/islands/{island}/citizens', [CitizenApiController::class, 'store'])->name('api.citizens.store');
 Route::patch('/citizens/{citizen}', [CitizenApiController::class, 'update'])->name('api.citizens.update');
+Route::post('/citizens/{citizen}/grab', [CitizenApiController::class, 'grab'])->name('api.citizens.grab');
+Route::post('/citizens/{citizen}/release', [CitizenApiController::class, 'release'])->name('api.citizens.release');
 Route::post('/citizens/{citizen}/move', [CitizenApiController::class, 'move'])->name('api.citizens.move');
 Route::post('/citizens/{citizen}/drowning', [CitizenApiController::class, 'drowning'])->name('api.citizens.drowning');
 Route::post('/citizens/{citizen}/throw', [CitizenApiController::class, 'throw'])->name('api.citizens.throw');

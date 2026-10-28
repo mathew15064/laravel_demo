@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\Citizen;
 use App\Models\God;
 use App\Models\Island;
-use App\Models\WorldState;
 use App\Services\WorldEventBroadcaster;
 use Database\Seeders\WorldSeeder;
 use Illuminate\Http\JsonResponse;
@@ -67,41 +66,32 @@ class WorldApiController extends Controller
                 // Redis non-fatal for world snapshot
             }
 
-            // World population = alive + drowning citizens
-            $worldPopulation = Citizen::whereIn('status', ['alive', 'drowning'])->count();
+            // World population = alive + drowning + held citizens
+            $worldPopulation = Citizen::whereIn('status', ['alive', 'drowning', 'held'])->count();
 
-            // Fetch islands with current population and governing god
-            $islands = Island::with(['governingGod:id,uuid,name,god_color'])
-                ->withCount([
-                    'citizens as population' => function ($q) {
-                        $q->whereIn('status', ['alive', 'drowning']);
-                    },
-                ])->get()->map(function (Island $isl) {
-                    return [
-                        'id' => $isl->id,
-                        'name' => $isl->name,
-                        'slug' => $isl->slug,
-                        'world_x' => (float) $isl->world_x,
-                        'world_z' => (float) $isl->world_z,
-                        'radius' => (float) $isl->radius,
-                        'type' => $isl->type,
-                        'seed' => (int) $isl->seed,
-                        'population' => (int) $isl->population,
-                        'governed_by_god_id' => $isl->governed_by_god_id,
-                        'banner_name' => $isl->banner_name,
-                        'governing_god' => $isl->governingGod ? [
-                            'id' => $isl->governingGod->id,
-                            'uuid' => $isl->governingGod->uuid,
-                            'name' => $isl->governingGod->name,
-                            'god_color' => $isl->governingGod->god_color,
-                        ] : null,
-                    ];
-                });
+            // Fetch islands with current population
+            $islands = Island::withCount([
+                'citizens as population' => function ($q) {
+                    $q->whereIn('status', ['alive', 'drowning', 'held']);
+                },
+            ])->get()->map(function (Island $isl) {
+                return [
+                    'id' => $isl->id,
+                    'name' => $isl->name,
+                    'slug' => $isl->slug,
+                    'world_x' => (float) $isl->world_x,
+                    'world_z' => (float) $isl->world_z,
+                    'radius' => (float) $isl->radius,
+                    'type' => $isl->type,
+                    'seed' => (int) $isl->seed,
+                    'population' => (int) $isl->population,
+                ];
+            });
 
-            // Fetch active citizens (alive or drowning)
+            // Fetch active citizens (alive, drowning, or held)
             $nowMs = (int) round(microtime(true) * 1000);
-            $citizens = Citizen::with(['god:id,uuid,name,god_color', 'island:id,name'])
-                ->whereIn('status', ['alive', 'drowning'])
+            $citizens = Citizen::with(['god:id,uuid,name,god_color', 'heldByGod:id,name,god_color', 'island:id,name'])
+                ->whereIn('status', ['alive', 'drowning', 'held'])
                 ->get()
                 ->map(function (Citizen $c) use ($nowMs) {
                     $remainingDrowningSec = 0;
@@ -120,6 +110,10 @@ class WorldApiController extends Controller
                         'created_by_god_id' => $c->created_by_god_id,
                         'creator_name' => $c->god?->name ?? 'Vô danh',
                         'creator_color' => $c->god?->god_color ?? '#8b5cf6',
+                        'held_by_god_id' => $c->held_by_god_id,
+                        'held_by_god_name' => $c->heldByGod?->name,
+                        'held_by_god_color' => $c->heldByGod?->god_color,
+                        'version' => $c->version ?? 1,
                         'position' => [
                             'x' => (float) $c->position_x,
                             'y' => (float) $c->position_y,
@@ -151,7 +145,7 @@ class WorldApiController extends Controller
             return response()->json([
                 'status' => 'error',
                 'code' => 'DATABASE_UNAVAILABLE',
-                'message' => 'Cánh cổng dữ liệu đã đóng. Thiên Đường không thể tải trạng thái thế giới: ' . $e->getMessage(),
+                'message' => 'Cánh cổng dữ liệu đã đóng. Thiên Đường không thể tải trạng thái thế giới: '.$e->getMessage(),
             ], 503);
         }
     }
@@ -171,13 +165,23 @@ class WorldApiController extends Controller
             Schema::enableForeignKeyConstraints();
 
             // Re-seed world
-            $seeder = new WorldSeeder();
+            $seeder = new WorldSeeder;
             $seeder->run();
 
-            // Reset Redis version
+            // Reset Redis version and online presence
             try {
                 Redis::set(WorldEventBroadcaster::VERSION_KEY, 1000);
-            } catch (Throwable) {}
+                Redis::del('paradise:online_gods');
+                $presenceKeys = Redis::keys('paradise:presence:*');
+                if (! empty($presenceKeys)) {
+                    Redis::del($presenceKeys);
+                }
+                $posKeys = Redis::keys('paradise:pos:*');
+                if (! empty($posKeys)) {
+                    Redis::del($posKeys);
+                }
+            } catch (Throwable) {
+            }
 
             WorldEventBroadcaster::broadcast('world.reset', null, null, [
                 'message' => 'Thế giới đã được tái khởi nguyên.',
@@ -192,7 +196,7 @@ class WorldApiController extends Controller
             return response()->json([
                 'status' => 'error',
                 'code' => 'DATABASE_RESET_FAILED',
-                'message' => 'Tái khởi nguyên thất bại: ' . $e->getMessage(),
+                'message' => 'Tái khởi nguyên thất bại: '.$e->getMessage(),
             ], 500);
         }
     }

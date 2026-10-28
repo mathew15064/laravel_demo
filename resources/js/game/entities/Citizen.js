@@ -16,15 +16,19 @@ export class Citizen {
         this.islandId = data.island_id;
         this.islandName = data.island_name;
         this.creatorName = data.creator_name || 'Thần';
+        this.heldByGodId = data.held_by_god_id || null;
+        this.heldByName = data.held_by_god_name || null;
+        this.heldByColor = data.held_by_god_color || '#8b5cf6';
 
         this.group = new THREE.Group();
         const initialX = data.position?.x ?? 0;
         const initialZ = data.position?.z ?? 0;
         this.group.position.set(initialX, 2.0, initialZ);
+        this.targetPosition = new THREE.Vector3().copy(this.group.position);
         this.group.userData = { isCitizen: true, citizenId: this.id, citizenInstance: this };
 
         // Animation state
-        this.state = this.status === 'drowning' ? 'drowning' : 'idle';
+        this.state = this.status === 'drowning' ? 'drowning' : (this.status === 'held' ? 'held' : 'idle');
         this.walkTarget = null;
         this.walkSpeed = 1.6;
         this.walkTimer = Math.random() * 3.0;
@@ -41,7 +45,48 @@ export class Citizen {
 
         this.buildMesh();
         this.buildLabel();
+        this.buildAura();
         this.scene.add(this.group);
+    }
+
+    buildAura() {
+        const auraGeo = new THREE.RingGeometry(0.8, 1.2, 24);
+        const auraMat = new THREE.MeshBasicMaterial({
+            color: 0x8b5cf6,
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0,
+        });
+        this.auraMesh = new THREE.Mesh(auraGeo, auraMat);
+        this.auraMesh.rotation.x = -Math.PI / 2;
+        this.auraMesh.position.y = 0.1;
+        this.group.add(this.auraMesh);
+    }
+
+    setHoldingGod(godId, godName = null, godColor = '#8b5cf6') {
+        this.heldByGodId = godId;
+        this.heldByName = godName;
+        this.heldByColor = godColor;
+        this.status = 'held';
+        if (this.auraMesh) {
+            const colorInt = parseInt(godColor.replace('#', '0x'), 16) || 0x8b5cf6;
+            this.auraMesh.material.color.setHex(colorInt);
+            this.auraMesh.material.opacity = 0.6;
+        }
+    }
+
+    clearHoldingGod() {
+        this.heldByGodId = null;
+        this.heldByName = null;
+        if (this.auraMesh) {
+            this.auraMesh.material.opacity = 0;
+        }
+    }
+
+    setTargetPosition(pos) {
+        if (pos) {
+            this.targetPosition.set(pos.x, pos.y ?? this.group.position.y, pos.z);
+        }
     }
 
     buildMesh() {
@@ -174,8 +219,18 @@ export class Citizen {
     update(delta, elapsedTime, islands) {
         if (this.status === 'dead') return;
 
-        // 1. Being dragged by God
+        // 1. Being dragged by local God
         if (this.isDragged) {
+            this.leftArm.rotation.x = -Math.PI * 0.7;
+            this.rightArm.rotation.x = -Math.PI * 0.7;
+            this.leftLeg.rotation.x = 0.3;
+            this.rightLeg.rotation.x = -0.3;
+            return;
+        }
+
+        // 1b. Being held remotely by another God (smooth network interpolation)
+        if (this.status === 'held') {
+            this.group.position.lerp(this.targetPosition, Math.min(delta * 14.0, 1.0));
             this.leftArm.rotation.x = -Math.PI * 0.7;
             this.rightArm.rotation.x = -Math.PI * 0.7;
             this.leftLeg.rotation.x = 0.3;

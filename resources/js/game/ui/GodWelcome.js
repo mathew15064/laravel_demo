@@ -119,11 +119,11 @@ export class GodWelcome {
                     <h2 class="text-2xl font-extrabold text-white tracking-tight mt-1">
                         Chào mừng trở lại,<br><span style="color: ${god.god_color || '#38bdf8'}">Thần ${god.name}</span>.
                     </h2>
-                    <p class="mt-2 text-xs text-slate-300">Quần Đảo Thiên Đường đang đợi ngài cai quản.</p>
+                    <p class="mt-2 text-xs text-slate-300">Quần Đảo Thiên Đường đang cùng các vị thần chào đón ngài.</p>
                 </div>
                 <button type="button" id="god-resume-btn"
                         class="w-full py-3.5 rounded-xl font-bold text-sm bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 text-slate-950 shadow-lg shadow-cyan-500/30 transition-all">
-                    TIẾP TỤC TRỊ VÌ
+                    VÀO THẾ GIỚI CHUNG
                 </button>
             </div>
         `;

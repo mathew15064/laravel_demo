@@ -23,16 +23,6 @@ class IslandApiController extends Controller
         $callerUuid = $request->header('X-God-UUID') ?? $validated['god_uuid'] ?? null;
         $callerGod = $callerUuid ? God::where('uuid', $callerUuid)->first() : null;
 
-        // Governance check: if island is already governed, only governing god can rename
-        if ($island->governed_by_god_id !== null) {
-            if (! $callerGod || $callerGod->id !== $island->governed_by_god_id) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Chỉ vị thần cai quản mới có quyền đổi tên hòn đảo này!',
-                ], 403);
-            }
-        }
-
         $oldName = $island->name;
         $island->update([
             'name' => trim($validated['name']),
@@ -42,7 +32,7 @@ class IslandApiController extends Controller
             'island_id' => $island->id,
             'old_name' => $oldName,
             'name' => $island->name,
-            'governed_by_god_id' => $island->governed_by_god_id,
+            'actor_god_name' => $callerGod?->name ?? 'Một vị thần',
         ]);
 
         return response()->json([
@@ -83,13 +73,14 @@ class IslandApiController extends Controller
 
         if ($island->governed_by_god_id !== null) {
             $currentRuler = God::find($island->governed_by_god_id);
+
             return response()->json([
                 'status' => 'error',
                 'message' => "Hòn đảo này đã thuộc quyền cai quản của {$currentRuler?->name}!",
             ], 409);
         }
 
-        $bannerName = "Thánh Địa " . $callerGod->name;
+        $bannerName = 'Thánh Địa '.$callerGod->name;
         $island->update([
             'governed_by_god_id' => $callerGod->id,
             'banner_name' => $bannerName,

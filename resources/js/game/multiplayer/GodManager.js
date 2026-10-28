@@ -44,28 +44,37 @@ export class GodManager {
 
     addGod(godData) {
         const id = godData.id || godData.god_id;
-        if (!id || this.avatars.has(id)) return;
+        if (!id) return;
+
+        // If avatar already exists (or was in the process of despawning), clean it up cleanly first
+        if (this.avatars.has(id)) {
+            const existing = this.avatars.get(id);
+            existing.dispose();
+            this.avatars.delete(id);
+        }
 
         const avatar = new DivineAvatar(this.scene, godData);
         this.avatars.set(id, avatar);
 
-        // Add to metadata list if not present
-        if (!this.onlineGodsList.some((g) => (g.id || g.god_id) === id)) {
-            this.onlineGodsList.push(godData);
-        }
+        // Update metadata list
+        this.onlineGodsList = this.onlineGodsList.filter((g) => (g.id || g.god_id) !== id);
+        this.onlineGodsList.push(godData);
     }
 
     removeGod(godId) {
         const avatar = this.avatars.get(godId);
         if (!avatar) return;
 
+        this.onlineGodsList = this.onlineGodsList.filter((g) => (g.id || g.god_id) !== godId);
+
         // Animate gentle fade out before removing
         avatar.playDespawnFade(() => {
-            avatar.dispose();
-            this.avatars.delete(godId);
+            // Only delete and dispose if this avatar instance is still active
+            if (this.avatars.get(godId) === avatar) {
+                avatar.dispose();
+                this.avatars.delete(godId);
+            }
         });
-
-        this.onlineGodsList = this.onlineGodsList.filter((g) => (g.id || g.god_id) !== godId);
     }
 
     updateGodPosition(godId, position) {

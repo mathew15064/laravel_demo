@@ -37,6 +37,7 @@ class Citizen extends Model
         'created_by_god_id',
         'thrown_by_god_id',
         'last_rescued_by_god_id',
+        'held_by_god_id',
         'name',
         'status',
         'skin_tone',
@@ -49,6 +50,7 @@ class Citizen extends Model
         'drowning_started_at',
         'drowning_deadline_at',
         'drowning_version',
+        'version',
     ];
 
     protected $casts = [
@@ -58,6 +60,7 @@ class Citizen extends Model
         'drowning_started_at' => 'integer',
         'drowning_deadline_at' => 'integer',
         'drowning_version' => 'integer',
+        'version' => 'integer',
     ];
 
     protected static function booted(): void
@@ -105,6 +108,11 @@ class Citizen extends Model
     public function lastRescuedByGod(): BelongsTo
     {
         return $this->belongsTo(God::class, 'last_rescued_by_god_id');
+    }
+
+    public function heldByGod(): BelongsTo
+    {
+        return $this->belongsTo(God::class, 'held_by_god_id');
     }
 
     public function rescues(): HasMany

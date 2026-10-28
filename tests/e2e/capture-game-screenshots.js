@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 const SCREENSHOT_DIR = path.resolve(process.cwd(), 'artifacts/screenshots');
-const BRAIN_DIR = '/home/dev5/.gemini/antigravity-cli/brain/91124a84-0f30-467c-8025-6e8b15198464/screenshots';
+const BRAIN_DIR = '/home/dev5/.gemini/antigravity-cli/brain/4d86c6c4-61e4-48d3-b08e-77a338712f5d/screenshots';
 
 fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 fs.mkdirSync(BRAIN_DIR, { recursive: true });

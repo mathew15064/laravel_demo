@@ -16,9 +16,9 @@ export class GodStats {
         const stats = god.stats || { created: 0, alive: 0, rescued: 0, drowned: 0, islands_governed: 0 };
 
         this.modal.innerHTML = `
-            <div class="max-w-md w-full mx-4 p-6 sm:p-8 rounded-3xl bg-slate-900/95 border border-cyan-500/40 shadow-2xl backdrop-blur-2xl text-white space-y-6 animate-fade-in relative">
+            <div class="max-w-md w-full mx-4 p-6 sm:p-8 rounded-3xl glass-panel shadow-2xl text-white space-y-6 animate-fade-in relative">
                 <!-- Close Button -->
-                <button type="button" id="god-stats-close-btn" class="absolute top-5 right-5 text-slate-400 hover:text-white p-1">
+                <button type="button" id="god-stats-close-btn" class="absolute top-5 right-5 text-slate-400 hover:text-white p-1 transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
 

@@ -26,7 +26,7 @@ export class ParadiseWorld {
 
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0xbae6fd); // tropical sky azure
-        this.scene.fog = new THREE.FogExp2(0xbae6fd, 0.007);
+        this.scene.fog = new THREE.FogExp2(0xbae6fd, 0.0028);
 
         const width = container.clientWidth || window.innerWidth;
         const height = container.clientHeight || window.innerHeight;
@@ -583,6 +583,9 @@ export class ParadiseWorld {
             this.islands.push(island);
         });
 
+        // Pass island positions to GPU ocean shader for coastal lagoons & shore foam
+        this.ocean.setIslandPositions(this.islands);
+
         // 2. Create Citizens
         (data.citizens || []).forEach((citData) => {
             const island = this.islands.find((i) => i.id === citData.island_id) || this.islands[0];
@@ -670,6 +673,7 @@ export class ParadiseWorld {
         const elapsed = this.clock.getElapsedTime();
 
         this.controls.update();
+        this.ocean.setCameraPosition(this.camera.position);
         this.ocean.update(elapsed);
         this.environment.update(elapsed);
         this.effects.update(delta);
@@ -745,12 +749,19 @@ export class ParadiseWorld {
         this.godManager.dispose();
         this.effects.dispose();
         this.ocean.dispose();
+        if (this.environment && typeof this.environment.dispose === 'function') {
+            this.environment.dispose();
+        }
 
         this.citizens.forEach((c) => c.dispose());
         this.citizens = [];
 
         this.islands.forEach((i) => {
-            this.scene.remove(i.group);
+            if (i && typeof i.dispose === 'function') {
+                i.dispose();
+            } else {
+                this.scene.remove(i.group);
+            }
         });
         this.islands = [];
 

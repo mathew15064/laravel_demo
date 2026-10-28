@@ -62,16 +62,26 @@ export class DivineAvatar {
         this.haloMesh = new THREE.Mesh(haloGeo, this.haloMat);
         this.group.add(this.haloMesh);
 
-        // 3. Rotating celestial orbital ring
-        const ringGeo = new THREE.TorusGeometry(2.6, 0.08, 16, 48);
+        // 3. Rotating celestial orbital rings (Dual gyro astrolabe)
+        this.ringGeo = new THREE.TorusGeometry(2.6, 0.08, 16, 48);
         this.ringMat = new THREE.MeshBasicMaterial({
             color: 0xffffff,
             transparent: true,
-            opacity: 0.6,
+            opacity: 0.65,
         });
-        this.ringMesh = new THREE.Mesh(ringGeo, this.ringMat);
+        this.ringMesh = new THREE.Mesh(this.ringGeo, this.ringMat);
         this.ringMesh.rotation.x = Math.PI / 3;
         this.group.add(this.ringMesh);
+
+        this.ringGeo2 = new THREE.TorusGeometry(2.3, 0.06, 16, 48);
+        this.ringMat2 = new THREE.MeshBasicMaterial({
+            color: this.colorInt,
+            transparent: true,
+            opacity: 0.75,
+        });
+        this.ringMesh2 = new THREE.Mesh(this.ringGeo2, this.ringMat2);
+        this.ringMesh2.rotation.y = Math.PI / 3;
+        this.group.add(this.ringMesh2);
 
         // 4. Floating divine nameplate sprite above avatar
         this.nameSprite = this.createNameSprite(this.name, this.colorHex);
@@ -134,6 +144,7 @@ export class DivineAvatar {
         this.coreMesh.position.y = bob;
         this.haloMesh.position.y = bob;
         this.ringMesh.position.y = bob;
+        if (this.ringMesh2) this.ringMesh2.position.y = bob;
 
         const scale = 1.0 + Math.sin(this.pulseTime * 1.5) * 0.12;
         this.haloMesh.scale.set(scale, scale, scale);
@@ -141,6 +152,10 @@ export class DivineAvatar {
         // 3. Ring slow rotation
         this.ringMesh.rotation.z += delta * 1.2;
         this.ringMesh.rotation.y += delta * 0.8;
+        if (this.ringMesh2) {
+            this.ringMesh2.rotation.x += delta * 1.0;
+            this.ringMesh2.rotation.z -= delta * 0.9;
+        }
 
         // 4. Handle fade out on leave
         if (this.isFadingOut) {
@@ -148,6 +163,7 @@ export class DivineAvatar {
             this.coreMat.opacity = this.fadeAlpha;
             this.haloMat.opacity = this.fadeAlpha * 0.35;
             this.ringMat.opacity = this.fadeAlpha * 0.6;
+            if (this.ringMat2) this.ringMat2.opacity = this.fadeAlpha * 0.75;
             this.nameSprite.material.opacity = this.fadeAlpha;
             if (this.fadeAlpha <= 0 && this.onFadeComplete) {
                 this.onFadeComplete();
@@ -295,6 +311,8 @@ export class DivineAvatar {
         this.haloMat?.dispose();
         this.ringGeo?.dispose();
         this.ringMat?.dispose();
+        this.ringGeo2?.dispose();
+        this.ringMat2?.dispose();
         this.nameSprite?.material?.map?.dispose();
         this.nameSprite?.material?.dispose();
     }

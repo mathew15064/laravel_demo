@@ -21,6 +21,16 @@ SHARED_LEG_GEO.translate(0, -0.25, 0); // pivot at hip
 
 const SHARED_AURA_GEO = new THREE.RingGeometry(0.8, 1.2, 16);
 
+// Shared contact shadow geometry & material for crisp ground anchoring
+const SHARED_SHADOW_GEO = new THREE.CircleGeometry(0.42, 16);
+SHARED_SHADOW_GEO.rotateX(-Math.PI / 2);
+const SHARED_SHADOW_MAT = new THREE.MeshBasicMaterial({
+    color: 0x060f1e,
+    transparent: true,
+    opacity: 0.36,
+    depthWrite: false,
+});
+
 // Shared static materials
 const SHARED_HAIR_MAT = new THREE.MeshLambertMaterial({ color: 0x27272a, flatShading: true });
 const SHARED_PANTS_MAT = new THREE.MeshLambertMaterial({ color: 0x1e293b, flatShading: true });
@@ -90,9 +100,16 @@ export class Citizen {
         this.drowningTimerId = null;
 
         this.buildMesh();
+        this.buildContactShadow();
         this.buildLabel();
         this.buildAura();
         this.scene.add(this.group);
+    }
+
+    buildContactShadow() {
+        this.contactShadow = new THREE.Mesh(SHARED_SHADOW_GEO, SHARED_SHADOW_MAT);
+        this.contactShadow.position.y = 0.02;
+        this.group.add(this.contactShadow);
     }
 
     buildAura() {
@@ -181,31 +198,33 @@ export class Citizen {
 
     buildLabel() {
         const canvas = document.createElement('canvas');
-        canvas.width = 160;
-        canvas.height = 50;
+        canvas.width = 180;
+        canvas.height = 56;
         const ctx = canvas.getContext('2d');
 
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.fillStyle = 'rgba(8, 15, 32, 0.85)';
         ctx.strokeStyle = '#38bdf8';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 2.5;
         ctx.beginPath();
         if (ctx.roundRect) {
-            ctx.roundRect(4, 4, 152, 42, 8);
+            ctx.roundRect(4, 4, 172, 48, 12);
         } else {
-            ctx.rect(4, 4, 152, 42);
+            ctx.rect(4, 4, 172, 48);
         }
         ctx.fill();
         ctx.stroke();
 
-        ctx.font = 'bold 18px system-ui, sans-serif';
+        ctx.font = 'bold 20px system-ui, -apple-system, sans-serif';
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
-        ctx.fillText(this.name, 80, 28);
+        ctx.shadowColor = 'rgba(0,0,0,0.6)';
+        ctx.shadowBlur = 4;
+        ctx.fillText(this.name, 90, 32);
 
         this.labelTex = new THREE.CanvasTexture(canvas);
         const spriteMat = new THREE.SpriteMaterial({ map: this.labelTex, transparent: true, depthTest: false });
         this.labelSprite = new THREE.Sprite(spriteMat);
-        this.labelSprite.scale.set(1.8, 0.6, 1);
+        this.labelSprite.scale.set(1.9, 0.6, 1);
         this.labelSprite.position.set(0, 2.05, 0);
         this.group.add(this.labelSprite);
     }
@@ -213,26 +232,28 @@ export class Citizen {
     updateLabel(newName) {
         if (newName) this.name = newName;
         const canvas = document.createElement('canvas');
-        canvas.width = 160;
-        canvas.height = 50;
+        canvas.width = 180;
+        canvas.height = 56;
         const ctx = canvas.getContext('2d');
 
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.fillStyle = 'rgba(8, 15, 32, 0.85)';
         ctx.strokeStyle = '#38bdf8';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 2.5;
         ctx.beginPath();
         if (ctx.roundRect) {
-            ctx.roundRect(4, 4, 152, 42, 8);
+            ctx.roundRect(4, 4, 172, 48, 12);
         } else {
-            ctx.rect(4, 4, 152, 42);
+            ctx.rect(4, 4, 172, 48);
         }
         ctx.fill();
         ctx.stroke();
 
-        ctx.font = 'bold 18px system-ui, sans-serif';
+        ctx.font = 'bold 20px system-ui, -apple-system, sans-serif';
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
-        ctx.fillText(this.name, 80, 28);
+        ctx.shadowColor = 'rgba(0,0,0,0.6)';
+        ctx.shadowBlur = 4;
+        ctx.fillText(this.name, 90, 32);
 
         this.labelTex.image = canvas;
         this.labelTex.needsUpdate = true;
@@ -246,6 +267,11 @@ export class Citizen {
 
     update(delta, elapsedTime, islands) {
         if (this.status === 'dead') return;
+
+        // Update contact shadow visibility based on status
+        if (this.contactShadow) {
+            this.contactShadow.visible = (this.status === 'alive' && !this.isDragged && !this.isThrown);
+        }
 
         // 1. Being dragged by local God
         if (this.isDragged) {

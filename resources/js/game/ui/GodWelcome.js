@@ -13,8 +13,8 @@ export class GodWelcome {
 
     showRegistration() {
         this.overlay.innerHTML = `
-            <div class="max-w-md w-full mx-4 p-8 rounded-3xl bg-slate-900/95 border border-cyan-500/40 shadow-2xl backdrop-blur-xl text-center space-y-6 animate-fade-in">
-                <div class="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/30">
+            <div class="max-w-md w-full mx-4 p-8 rounded-3xl glass-panel text-center space-y-6 animate-fade-in shadow-2xl">
+                <div class="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr from-cyan-400 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/30">
                     <span class="text-3xl">⚡</span>
                 </div>
                 <div>

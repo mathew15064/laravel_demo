@@ -15,7 +15,7 @@ export class DrowningAlert {
 
         const card = document.createElement('div');
         card.id = `drowning-alert-${citizen.id}`;
-        card.className = 'pointer-events-auto p-4 rounded-2xl bg-rose-950/90 border border-rose-500/60 shadow-2xl backdrop-blur-md text-white flex items-center justify-between gap-4 animate-bounce-subtle w-80';
+        card.className = 'pointer-events-auto p-3.5 rounded-2xl bg-rose-950/85 border border-rose-500/50 shadow-2xl backdrop-blur-md text-white flex items-center justify-between gap-3.5 w-80 animate-fade-in transition-all';
 
         const updateCountdown = () => {
             const now = Date.now();

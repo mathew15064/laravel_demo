@@ -5,25 +5,33 @@ export class Toast {
     constructor(container) {
         this.container = container;
         this.toasts = [];
+        this.lastMessages = new Map(); // message -> timestamp
     }
 
-    show(message, type = 'info', duration = 4000) {
+    show(message, type = 'info', duration = 3800) {
+        // Prevent visual noise from identical rapid events (within 1.5s)
+        const now = Date.now();
+        if (this.lastMessages.has(message) && now - this.lastMessages.get(message) < 1500) {
+            return;
+        }
+        this.lastMessages.set(message, now);
+
         const toast = document.createElement('div');
-        toast.className = `p-3.5 rounded-xl shadow-lg border text-xs font-mono transition-all duration-300 transform translate-y-2 opacity-0 flex items-center gap-2.5 backdrop-blur-md ${
+        toast.className = `p-3 rounded-2xl shadow-xl border text-xs font-sans transition-all duration-300 transform translate-y-2 opacity-0 flex items-center gap-2.5 backdrop-blur-md ${
             type === 'warning'
-                ? 'bg-amber-950/85 border-amber-500/50 text-amber-200'
+                ? 'bg-amber-950/80 border-amber-500/40 text-amber-200'
                 : type === 'danger'
-                ? 'bg-rose-950/85 border-rose-500/50 text-rose-200'
+                ? 'bg-rose-950/80 border-rose-500/40 text-rose-200'
                 : type === 'success'
-                ? 'bg-emerald-950/85 border-emerald-500/50 text-emerald-200'
-                : 'bg-slate-900/85 border-cyan-500/40 text-cyan-200'
+                ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-200'
+                : 'bg-slate-900/80 border-cyan-500/30 text-cyan-200'
         }`;
 
         toast.innerHTML = `
-            <span class="w-2 h-2 rounded-full ${
-                type === 'warning' ? 'bg-amber-400 animate-ping' : type === 'danger' ? 'bg-rose-400' : 'bg-cyan-400'
+            <span class="w-2 h-2 rounded-full shrink-0 ${
+                type === 'warning' ? 'bg-amber-400 animate-ping' : type === 'danger' ? 'bg-rose-400' : type === 'success' ? 'bg-emerald-400' : 'bg-cyan-400'
             }"></span>
-            <span class="flex-grow">${message}</span>
+            <span class="flex-grow font-medium leading-relaxed">${message}</span>
         `;
 
         this.container.appendChild(toast);

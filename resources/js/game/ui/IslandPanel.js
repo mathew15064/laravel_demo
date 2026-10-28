@@ -22,9 +22,9 @@ export class IslandPanel {
         this.currentIsland = island;
 
         this.container.innerHTML = `
-            <div class="pointer-events-auto p-5 rounded-3xl bg-slate-900/90 border border-slate-700/80 shadow-2xl backdrop-blur-xl text-white space-y-4 w-72 animate-fade-in relative">
+            <div class="pointer-events-auto p-5 rounded-3xl glass-panel shadow-2xl text-white space-y-4 w-72 animate-fade-in relative">
                 <!-- Close Button -->
-                <button type="button" id="island-panel-close-btn" class="absolute top-4 right-4 text-slate-400 hover:text-white p-1">
+                <button type="button" id="island-panel-close-btn" class="absolute top-4 right-4 text-slate-400 hover:text-white p-1 transition-colors">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
 
@@ -33,7 +33,7 @@ export class IslandPanel {
                     <h3 id="island-panel-name" class="text-lg font-bold text-white mt-0.5">${island.name}</h3>
                 </div>
 
-                <div class="p-3 rounded-2xl bg-slate-950/80 border border-slate-800 flex items-center justify-between">
+                <div class="p-3 rounded-2xl bg-slate-950/70 border border-slate-800/80 flex items-center justify-between">
                     <span class="text-xs font-mono text-slate-400">Dân số hiện tại:</span>
                     <span id="island-panel-population" class="text-xl font-bold font-mono text-emerald-400">${island.data?.population ?? 0}</span>
                 </div>
@@ -41,18 +41,18 @@ export class IslandPanel {
                 <!-- Action Buttons (Neutral / Shared) -->
                 <div class="space-y-2 pt-1">
                     <button type="button" id="island-create-citizen-btn"
-                            class="w-full py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 shadow-md shadow-emerald-500/20 transition-all flex items-center justify-center gap-1.5">
+                            class="w-full py-2.5 rounded-xl text-xs font-bold glass-button-primary flex items-center justify-center gap-1.5 cursor-pointer">
                         <span>✨</span>
                         <span>TẠO NGƯỜI DÂN</span>
                     </button>
 
                     <button type="button" id="island-focus-btn"
-                            class="w-full py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-all">
+                            class="w-full py-2 rounded-xl text-xs font-medium glass-button-secondary cursor-pointer">
                         FOCUS ĐẢO
                     </button>
 
                     <button type="button" id="island-rename-btn"
-                            class="w-full py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-cyan-300 transition-all">
+                            class="w-full py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer">
                         Đổi tên đảo
                     </button>
                     <div class="text-[10px] text-center text-slate-500 italic">

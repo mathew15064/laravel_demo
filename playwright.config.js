@@ -28,6 +28,9 @@ export default defineConfig({
             url: 'http://127.0.0.1:8008/health',
             reuseExistingServer: !process.env.CI,
             timeout: 15000,
+            env: {
+                VITE_WS_URL: 'ws://127.0.0.1:8089',
+            },
         },
         {
             command: 'node server/realtime-server.js',

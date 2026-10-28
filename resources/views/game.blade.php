@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <meta name="ws-url" content="{{ env('VITE_WS_URL', 'ws://127.0.0.1:8089') }}">
+    <meta name="ws-url" content="{{ config('services.realtime.ws_url') ?: ((request()->isSecure() ? 'wss://' : 'ws://') . request()->getHttpHost() . '/ws/') }}">
 
     <title>{{ $appName ?? 'Paradise Gods' }} — Thiên Đường Quần Đảo Đa Thần</title>
     <meta name="description" content="A shared persistent realtime world where multiple gods interact, rescue citizens, and govern miniature islands.">

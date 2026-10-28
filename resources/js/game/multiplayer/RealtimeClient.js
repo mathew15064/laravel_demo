@@ -8,8 +8,22 @@ import { PERFORMANCE_CONFIG } from '../config/performance.js';
 export class RealtimeClient {
     constructor(wsUrl = null, toast = null) {
         const metaTag = document.querySelector('meta[name="ws-url"]');
-        const defaultHost = window.location.hostname || '127.0.0.1';
-        this.wsUrl = wsUrl || metaTag?.getAttribute('content') || `ws://${defaultHost}:8089`;
+        const metaContent = metaTag?.getAttribute('content')?.trim();
+
+        let resolvedUrl = wsUrl || metaContent;
+        if (!resolvedUrl) {
+            const isSecure = typeof window !== 'undefined' && window.location?.protocol === 'https:';
+            const protocol = isSecure ? 'wss:' : 'ws:';
+            const host = (typeof window !== 'undefined' && window.location?.host) ? window.location.host : 'localhost';
+            resolvedUrl = `${protocol}//${host}/ws/`;
+        } else if (resolvedUrl.startsWith('/')) {
+            const isSecure = typeof window !== 'undefined' && window.location?.protocol === 'https:';
+            const protocol = isSecure ? 'wss:' : 'ws:';
+            const host = (typeof window !== 'undefined' && window.location?.host) ? window.location.host : 'localhost';
+            resolvedUrl = `${protocol}//${host}${resolvedUrl}`;
+        }
+
+        this.wsUrl = resolvedUrl;
         this.toast = toast;
 
         this.socket = null;

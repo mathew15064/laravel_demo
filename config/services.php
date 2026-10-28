@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'realtime' => [
+        'ws_url' => env('VITE_WS_URL'),
+    ],
+
 ];
